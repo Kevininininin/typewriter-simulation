@@ -1,0 +1,247 @@
+@import url("https://fonts.googleapis.com/css2?family=Special+Elite&display=swap");
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: #171337;
+  color: #f5ebd9;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+button {
+  border: 1px solid rgba(245, 235, 217, 0.38);
+  border-radius: 8px;
+  background: rgba(245, 235, 217, 0.1);
+  color: #f5ebd9;
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 12px;
+}
+
+button:hover,
+button:focus-visible {
+  background: rgba(245, 235, 217, 0.18);
+}
+
+.app-shell {
+  position: relative;
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  min-height: 520px;
+  overflow: hidden;
+  background: #171337;
+}
+
+.keyboard-capture {
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  z-index: -1;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-toolbar {
+  position: fixed;
+  z-index: 10;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(245, 235, 217, 0.18);
+  border-radius: 8px;
+  background: rgba(9, 7, 28, 0.52);
+  color: rgba(245, 235, 217, 0.88);
+  font-size: 14px;
+  padding: 8px;
+  backdrop-filter: blur(12px);
+}
+
+.machine-viewport {
+  position: relative;
+  align-self: end;
+  justify-self: center;
+  width: min(100vw, calc(100vh * 4621 / 2894));
+  height: min(100vh, calc(100vw * 2894 / 4621));
+  overflow: hidden;
+}
+
+.machine-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 4621px;
+  height: 2894px;
+  transform-origin: top left;
+}
+
+.figma-asset {
+  position: absolute;
+  display: block;
+  max-width: none;
+  object-fit: cover;
+  pointer-events: none;
+  user-select: none;
+}
+
+.carriage {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 3098px;
+  height: 2607px;
+  transition: transform 110ms ease-out;
+  will-change: transform;
+}
+
+.carriage-alert {
+  animation: carriage-bump 170ms ease-out;
+}
+
+.platen {
+  left: 0;
+  top: 1987px;
+  width: 3098px;
+  height: 620px;
+}
+
+.paper {
+  position: absolute;
+  left: 836px;
+  border-radius: 0 0 10px 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 252, 245, 0.2), rgba(232, 219, 197, 0) 28%),
+    linear-gradient(180deg, #ede2d0 0%, #ede2d0 96.237%, #878177 100%);
+  box-shadow:
+    inset 0 0 70px rgba(46, 33, 18, 0.08),
+    0 1px 1px rgba(255, 255, 255, 0.24);
+  transition:
+    top 130ms ease-out,
+    height 130ms ease-out;
+}
+
+.roller-shadow {
+  position: absolute;
+  left: 826px;
+  top: 2035px;
+  width: 1682px;
+  height: 271px;
+  opacity: 0.1;
+  background-image: linear-gradient(
+    180deg,
+    rgba(217, 217, 217, 0) 0%,
+    rgb(0, 0, 0) 51.442%,
+    rgb(0, 0, 0) 57.212%,
+    rgba(217, 217, 217, 0) 100%
+  );
+}
+
+.typed-paper-text {
+  position: absolute;
+  left: 1002px;
+  width: 1327px;
+  color: #050505;
+  font-family: "Special Elite", "Courier New", monospace;
+  font-size: 33px;
+  font-weight: 400;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  transition: top 130ms ease-out;
+}
+
+.paper-press-roller {
+  left: 499px;
+  top: 1964px;
+  width: 2345px;
+  height: 516px;
+}
+
+.fixed-typewriter-body {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.point-guide-guard {
+  left: 1367px;
+  top: 2297px;
+  width: 1980px;
+  height: 365px;
+}
+
+.color-ribbon-slugs {
+  left: 1556px;
+  top: 2391px;
+  width: 1785px;
+  height: 567px;
+}
+
+.typewriter-body {
+  left: 1035px;
+  top: 2326px;
+  width: 2737px;
+  height: 1498px;
+}
+
+.typing-cursor {
+  position: absolute;
+  z-index: 5;
+  width: 4px;
+  height: 39px;
+  background: rgba(5, 5, 5, 0.86);
+  transform: translateY(1px);
+  animation: cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes carriage-bump {
+  50% {
+    translate: -12px 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    min-height: 460px;
+  }
+
+  .app-toolbar {
+    top: 10px;
+    right: 10px;
+    font-size: 12px;
+    padding: 6px;
+  }
+
+  button {
+    padding: 7px 10px;
+  }
+}
