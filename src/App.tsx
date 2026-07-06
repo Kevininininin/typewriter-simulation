@@ -11,9 +11,9 @@ const FIGMA = {
   paperBottom: 2607,
   paperWidth: 1672,
   textInsetX: 1002,
-  textBaseTop: 2204,
+  textBaseTop: 2350,
   cursorX: 2369,
-  cursorY: 2204,
+  cursorY: 2350,
 };
 
 const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
