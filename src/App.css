@@ -166,7 +166,12 @@ select {
     0 1px 1px rgba(255, 255, 255, 0.24);
   transition:
     top 130ms ease-out,
-    height 130ms ease-out;
+    height 130ms ease-out,
+    border-radius 130ms ease-out;
+}
+
+.paper.is-page-ending {
+  border-radius: 0;
 }
 
 .roller-shadow {
@@ -175,7 +180,9 @@ select {
   top: 2035px;
   width: 1682px;
   height: 271px;
+  cursor: ns-resize;
   opacity: 0.1;
+  touch-action: none;
   background-image: linear-gradient(
     180deg,
     rgba(217, 217, 217, 0) 0%,
@@ -202,6 +209,7 @@ select {
 }
 
 .carriage.is-page-dragging .paper,
+.carriage.is-page-dragging .roller-shadow,
 .carriage.is-page-dragging .typed-paper-text {
   cursor: ns-resize;
   transition: none;

@@ -29,6 +29,8 @@ const FIGMA = {
 
 const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
 const maxFeed = FIGMA.maxPaperHeight - FIGMA.initialPaperHeight;
+const paperTopMargin = FIGMA.textBaseTop - (FIGMA.paperBottom - FIGMA.initialPaperHeight);
+const maxPaperBottomLift = FIGMA.paperBottom - (FIGMA.cursorY + paperTopMargin);
 const initialZoom = 1;
 const defaultZoom = 1.5;
 const fontSpec = `${FIGMA.typeSize}px "Special Elite", "Courier New", monospace`;
@@ -219,6 +221,8 @@ function App() {
   const carriageX = FIGMA.carriageRightX - currentAdvance;
   const feed = Math.min(dragFeed ?? lineTops[currentLineIndex] ?? 0, maxFeed);
   const paperTop = FIGMA.paperBottom - (FIGMA.initialPaperHeight + feed);
+  const pageEndProgress = clamp((feed - (maxFeed - paperTopMargin)) / paperTopMargin, 0, 1);
+  const paperBottom = FIGMA.paperBottom - maxPaperBottomLift * pageEndProgress;
   const textTop = FIGMA.textBaseTop - feed;
 
   useEffect(() => {
@@ -766,7 +770,7 @@ function App() {
             <img className="figma-asset platen" src={ASSETS.platen} alt="" draggable="false" />
 
             <div
-              className="paper"
+              className={`paper ${pageEndProgress > 0.85 ? "is-page-ending" : ""}`}
               data-page-surface
               onPointerDown={startPageDrag}
               onPointerMove={updatePageDrag}
@@ -774,12 +778,19 @@ function App() {
               onPointerCancel={finishPageDrag}
               style={{
                 top: paperTop,
-                height: FIGMA.paperBottom - paperTop,
+                height: paperBottom - paperTop,
                 width: FIGMA.paperWidth,
               }}
             />
 
-            <div className="roller-shadow" />
+            <div
+              className="roller-shadow"
+              data-page-surface
+              onPointerDown={startPageDrag}
+              onPointerMove={updatePageDrag}
+              onPointerUp={finishPageDrag}
+              onPointerCancel={finishPageDrag}
+            />
 
             <div
               className="typed-paper-text"
