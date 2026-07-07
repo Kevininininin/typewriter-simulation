@@ -1,11 +1,12 @@
-import { ClipboardEvent, CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const FIGMA = {
   frameWidth: 4621,
   frameHeight: 2894,
   carriageRightX: 1367,
   carriageLeftX: 69,
-  maxFeed: 1852 - 643,
+  maxPaperHeight: 1852,
+  initialPaperHeight: 560,
   lineHeight: 39,
   typeSize: 33,
   paperBottom: 2607,
@@ -17,9 +18,10 @@ const FIGMA = {
 };
 
 const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
-const maxLineIndex = Math.floor(FIGMA.maxFeed / FIGMA.lineHeight);
+const maxFeed = FIGMA.maxPaperHeight - FIGMA.initialPaperHeight;
 const fontSpec = `${FIGMA.typeSize}px "Special Elite", "Courier New", monospace`;
 const slugTransitionMs = 90;
+const lineSpace = FIGMA.lineHeight - FIGMA.typeSize;
 
 const ASSETS = {
   platen: "/assets/platen.png",
@@ -31,7 +33,26 @@ const ASSETS = {
   typewriterBody: "/assets/typewriter-body.png",
 };
 
+const AUDIO = {
+  ding: "/assets/audio/Ding.mp3",
+  keyPresses: [
+    "/assets/audio/key%20press%201.mp3",
+    "/assets/audio/key%20press%202.mp3",
+    "/assets/audio/key%20press%203.mp3",
+    "/assets/audio/key%20press%204.mp3",
+    "/assets/audio/key%20press%205.mp3",
+    "/assets/audio/key%20press%206.mp3",
+  ],
+  newLine: "/assets/audio/new%20line.mp3",
+};
+
 type Notice = "ready" | "margin" | "page-end";
+type LineSpacing = 0 | 1 | 1.5 | 2;
+type LineBreak = {
+  afterLineIndex: number;
+  spacing: LineSpacing;
+  advance: number;
+};
 type SlugConfig = {
   id: number;
   slugWidth: number;
@@ -75,6 +96,25 @@ function isPrintableKey(event: KeyboardEvent): boolean {
   return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
 }
 
+function shouldPlayReturnSound(line: string, cursorColumn: number): boolean {
+  const traveledText = line.slice(0, cursorColumn);
+  return traveledText.length >= 15 && /\S/.test(traveledText);
+}
+
+function getLineAdvance(spacing: LineSpacing): number {
+  return FIGMA.typeSize + lineSpace * spacing;
+}
+
+function getLineTops(lineBreaks: LineBreak[], lineCount: number): number[] {
+  const tops = [0];
+
+  for (let index = 1; index < lineCount; index += 1) {
+    tops[index] = tops[index - 1] + (lineBreaks[index - 1]?.advance ?? getLineAdvance(1));
+  }
+
+  return tops;
+}
+
 function useSpecialEliteMeasure() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [fontReady, setFontReady] = useState(false);
@@ -103,26 +143,64 @@ function useSpecialEliteMeasure() {
 
 function App() {
   const [lines, setLines] = useState<string[]>([""]);
+  const [lineBreaks, setLineBreaks] = useState<LineBreak[]>([]);
   const [notice, setNotice] = useState<Notice>("ready");
   const [activeSlugId, setActiveSlugId] = useState<number | null>(null);
   const [isSlugPressed, setIsSlugPressed] = useState(false);
   const [stageScale, setStageScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [lineSpacing, setLineSpacing] = useState<LineSpacing>(1);
+  const [cursorColumn, setCursorColumn] = useState(0);
   const releaseTimeoutRef = useRef<number | null>(null);
+  const linesRef = useRef(lines);
+  const lineBreaksRef = useRef(lineBreaks);
+  const cursorColumnRef = useRef(cursorColumn);
+  const marginDingedRef = useRef(false);
+  const keyPressAudioRef = useRef<HTMLAudioElement[]>([]);
+  const dingAudioRef = useRef<HTMLAudioElement | null>(null);
+  const newLineAudioRef = useRef<HTMLAudioElement | null>(null);
   const viewportRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { measure } = useSpecialEliteMeasure();
 
+  const lineTops = useMemo(() => getLineTops(lineBreaks, lines.length), [lineBreaks, lines.length]);
   const currentLineIndex = lines.length - 1;
   const currentLine = lines[currentLineIndex] ?? "";
-  const currentAdvance = Math.min(measure(currentLine), maxAdvance);
+  const currentAdvance = Math.min(measure(currentLine.slice(0, cursorColumn)), maxAdvance);
   const carriageX = FIGMA.carriageRightX - currentAdvance;
-  const feed = Math.min(currentLineIndex * FIGMA.lineHeight, FIGMA.maxFeed);
-  const paperTop = FIGMA.paperBottom - (643 + feed);
+  const feed = Math.min(lineTops[currentLineIndex] ?? 0, maxFeed);
+  const paperTop = FIGMA.paperBottom - (FIGMA.initialPaperHeight + feed);
   const textTop = FIGMA.textBaseTop - feed;
   const typedText = lines.join("\n");
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    linesRef.current = lines;
+  }, [lines]);
+
+  useEffect(() => {
+    lineBreaksRef.current = lineBreaks;
+  }, [lineBreaks]);
+
+  useEffect(() => {
+    cursorColumnRef.current = cursorColumn;
+  }, [cursorColumn]);
+
+  useEffect(() => {
+    keyPressAudioRef.current = AUDIO.keyPresses.map((source) => {
+      const audio = new Audio(source);
+      audio.preload = "auto";
+      return audio;
+    });
+
+    dingAudioRef.current = new Audio(AUDIO.ding);
+    dingAudioRef.current.preload = "auto";
+
+    newLineAudioRef.current = new Audio(AUDIO.newLine);
+    newLineAudioRef.current.preload = "auto";
   }, []);
 
   useEffect(() => {
@@ -152,6 +230,48 @@ function App() {
     };
   }, []);
 
+  const setDocumentLines = (nextLines: string[]) => {
+    linesRef.current = nextLines;
+    setLines(nextLines);
+  };
+
+  const setDocumentLineBreaks = (nextLineBreaks: LineBreak[]) => {
+    lineBreaksRef.current = nextLineBreaks;
+    setLineBreaks(nextLineBreaks);
+  };
+
+  const setDocumentCursorColumn = (nextCursorColumn: number) => {
+    cursorColumnRef.current = nextCursorColumn;
+    setCursorColumn(nextCursorColumn);
+  };
+
+  const setCurrentLine = (line: string, nextCursorColumn: number) => {
+    const next = [...linesRef.current];
+    next[next.length - 1] = line;
+    setDocumentLines(next);
+    setDocumentCursorColumn(nextCursorColumn);
+  };
+
+  const playAudio = (audio: HTMLAudioElement | null | undefined) => {
+    if (!audio) return;
+    audio.currentTime = 0;
+    void audio.play().catch(() => undefined);
+  };
+
+  const playRandomKeyPress = () => {
+    const audios = keyPressAudioRef.current;
+    if (audios.length === 0) return;
+    playAudio(audios[Math.floor(Math.random() * audios.length)]);
+  };
+
+  const playNewLine = () => {
+    playAudio(newLineAudioRef.current);
+  };
+
+  const playDing = () => {
+    playAudio(dingAudioRef.current);
+  };
+
   const pressSlug = (key: string) => {
     if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
     releaseTimeoutRef.current = null;
@@ -170,67 +290,125 @@ function App() {
   };
 
   const resetDocument = () => {
-    setLines([""]);
+    setDocumentLines([""]);
+    setDocumentLineBreaks([]);
+    setDocumentCursorColumn(0);
+    marginDingedRef.current = false;
     setNotice("ready");
     inputRef.current?.focus();
   };
 
   const addReturn = () => {
-    setLines((previous) => {
-      if (previous.length - 1 >= maxLineIndex) {
-        setNotice("page-end");
-        return previous;
-      }
-      setNotice("ready");
-      return [...previous, ""];
-    });
+    const previous = linesRef.current;
+    const previousLineBreaks = lineBreaksRef.current;
+    const line = previous[previous.length - 1] ?? "";
+    const advance = getLineAdvance(lineSpacing);
+    const currentFeed = getLineTops(previousLineBreaks, previous.length)[previous.length - 1] ?? 0;
+
+    if (currentFeed + advance > maxFeed) {
+      setNotice("page-end");
+      return false;
+    }
+
+    if (shouldPlayReturnSound(line, cursorColumnRef.current)) playNewLine();
+    setNotice("ready");
+    setDocumentLines([...previous, ""]);
+    setDocumentLineBreaks([
+      ...previousLineBreaks,
+      {
+        afterLineIndex: previous.length - 1,
+        spacing: lineSpacing,
+        advance,
+      },
+    ]);
+    setDocumentCursorColumn(0);
+    marginDingedRef.current = false;
+    return true;
   };
 
   const addCharacter = (character: string) => {
-    setLines((previous) => {
-      const next = [...previous];
-      const index = next.length - 1;
-      const candidate = `${next[index]}${character}`;
+    const previous = linesRef.current;
+    const index = previous.length - 1;
+    const line = previous[index] ?? "";
+    const cursor = cursorColumnRef.current;
+    const candidate = `${line.slice(0, cursor)}${character}${line.slice(cursor + 1)}`;
+    const nextCursor = cursor + 1;
 
-      if (measure(candidate) > maxAdvance) {
-        setNotice("margin");
-        return previous;
-      }
+    if (measure(candidate.slice(0, nextCursor)) > maxAdvance) {
+      if (!marginDingedRef.current) playDing();
+      marginDingedRef.current = true;
+      setNotice("margin");
+      return;
+    }
 
-      next[index] = candidate;
-      setNotice("ready");
-      return next;
-    });
+    marginDingedRef.current = false;
+    setNotice("ready");
+    setCurrentLine(candidate, nextCursor);
   };
 
   const removeCharacter = () => {
-    setLines((previous) => {
-      const next = [...previous];
-      const index = next.length - 1;
+    const previous = linesRef.current;
+    const next = [...previous];
+    const index = next.length - 1;
+    const line = next[index] ?? "";
+    const cursor = cursorColumnRef.current;
 
-      if (next[index].length > 0) {
-        next[index] = next[index].slice(0, -1);
-        return next;
-      }
+    if (cursor > 0) {
+      next[index] = `${line.slice(0, cursor - 1)}${line.slice(cursor)}`;
+      setDocumentLines(next);
+      setDocumentCursorColumn(cursor - 1);
+    } else if (next.length > 1) {
+      next.pop();
+      setDocumentLines(next);
+      setDocumentLineBreaks(lineBreaksRef.current.slice(0, -1));
+      setDocumentCursorColumn(next[next.length - 1]?.length ?? 0);
+    }
 
-      if (next.length > 1) {
-        next.pop();
-        return next;
-      }
-
-      return previous;
-    });
+    marginDingedRef.current = false;
     setNotice("ready");
   };
 
-  const typeText = (text: string) => {
+  const typeText = (text: string, options: { playKeySounds?: boolean } = {}) => {
+    const { playKeySounds = true } = options;
+
     for (const character of text) {
       if (character === "\n" || character === "\r") {
         addReturn();
       } else if (character >= " ") {
+        if (playKeySounds) playRandomKeyPress();
         addCharacter(character);
       }
     }
+  };
+
+  const moveCursorLeft = () => {
+    setDocumentCursorColumn(Math.max(0, cursorColumnRef.current - 1));
+    marginDingedRef.current = false;
+    setNotice("ready");
+  };
+
+  const moveCursorRight = () => {
+    const line = linesRef.current[linesRef.current.length - 1] ?? "";
+    const cursor = cursorColumnRef.current;
+
+    if (cursor < line.length) {
+      setDocumentCursorColumn(cursor + 1);
+      marginDingedRef.current = false;
+      setNotice("ready");
+      return;
+    }
+
+    addCharacter(" ");
+  };
+
+  const handleZoomChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    setZoom(Number(event.target.value));
+    inputRef.current?.focus();
+  };
+
+  const handleLineSpacingChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    setLineSpacing(Number(event.target.value) as LineSpacing);
+    inputRef.current?.focus();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -245,20 +423,40 @@ function App() {
       return;
     }
 
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveCursorLeft();
+      return;
+    }
+
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveCursorRight();
+      return;
+    }
+
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      return;
+    }
+
     if (event.key === "Backspace") {
       event.preventDefault();
+      playRandomKeyPress();
       removeCharacter();
       return;
     }
 
     if (event.key === "Tab") {
       event.preventDefault();
-      typeText("    ");
+      playRandomKeyPress();
+      typeText("    ", { playKeySounds: false });
       return;
     }
 
     if (isPrintableKey(event)) {
       event.preventDefault();
+      playRandomKeyPress();
       if (event.key !== " ") pressSlug(event.key);
       addCharacter(event.key);
     }
@@ -293,13 +491,31 @@ function App() {
 
       <div className="app-toolbar" aria-live="polite">
         <span>{statusText}</span>
+        <label>
+          Zoom
+          <select value={zoom} onChange={handleZoomChange}>
+            <option value={1}>Default</option>
+            <option value={1.25}>125%</option>
+            <option value={1.5}>150%</option>
+            <option value={1.75}>175%</option>
+          </select>
+        </label>
+        <label>
+          Line
+          <select value={lineSpacing} onChange={handleLineSpacingChange}>
+            <option value={0}>0</option>
+            <option value={1}>1</option>
+            <option value={1.5}>1.5</option>
+            <option value={2}>2</option>
+          </select>
+        </label>
         <button type="button" onClick={resetDocument}>
           New page
         </button>
       </div>
 
       <section ref={viewportRef} className="machine-viewport" aria-label="Interactive typewriter">
-        <div className="machine-stage" style={{ transform: `scale(${stageScale})` }}>
+        <div className="machine-stage" style={{ transform: `translateX(-50%) scale(${stageScale * zoom})` }}>
           <div
             className={`carriage ${notice !== "ready" ? "carriage-alert" : ""}`}
             style={{ transform: `translate3d(${carriageX}px, 0, 0)` }}
@@ -321,10 +537,13 @@ function App() {
               className="typed-paper-text"
               style={{
                 top: textTop,
-                lineHeight: `${FIGMA.lineHeight}px`,
               }}
             >
-              {typedText}
+              {lines.map((line, index) => (
+                <div key={index} className="typed-paper-line" style={{ top: lineTops[index] ?? 0 }}>
+                  {line || "\u00a0"}
+                </div>
+              ))}
             </div>
 
             <img

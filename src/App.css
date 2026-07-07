@@ -27,19 +27,30 @@ body {
     sans-serif;
 }
 
-button {
+button,
+select {
   border: 1px solid rgba(245, 235, 217, 0.38);
   border-radius: 8px;
   background: rgba(245, 235, 217, 0.1);
   color: #f5ebd9;
-  cursor: pointer;
   font: inherit;
   padding: 8px 12px;
 }
 
+button,
+select {
+  cursor: pointer;
+}
+
 button:hover,
-button:focus-visible {
+button:focus-visible,
+select:hover,
+select:focus-visible {
   background: rgba(245, 235, 217, 0.18);
+}
+
+select {
+  padding-right: 28px;
 }
 
 .app-shell {
@@ -80,6 +91,12 @@ button:focus-visible {
   backdrop-filter: blur(12px);
 }
 
+.app-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .machine-viewport {
   position: relative;
   align-self: end;
@@ -91,11 +108,11 @@ button:focus-visible {
 
 .machine-stage {
   position: absolute;
-  left: 0;
-  top: 0;
+  left: 50%;
+  bottom: 0;
   width: 4621px;
   height: 2894px;
-  transform-origin: top left;
+  transform-origin: bottom center;
 }
 
 .figma-asset {
@@ -170,6 +187,12 @@ button:focus-visible {
   word-break: normal;
   overflow-wrap: normal;
   transition: top 130ms ease-out;
+}
+
+.typed-paper-line {
+  position: absolute;
+  left: 0;
+  min-height: 39px;
 }
 
 .paper-press-roller {
@@ -310,7 +333,8 @@ button:focus-visible {
     padding: 6px;
   }
 
-  button {
+  button,
+  select {
     padding: 7px 10px;
   }
 }
