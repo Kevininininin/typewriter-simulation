@@ -1,4 +1,14 @@
-import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  ClipboardEvent,
+  CSSProperties,
+  KeyboardEvent,
+  PointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 const FIGMA = {
   frameWidth: 4621,
@@ -6,7 +16,7 @@ const FIGMA = {
   carriageRightX: 1367,
   carriageLeftX: 69,
   maxPaperHeight: 1852,
-  initialPaperHeight: 560,
+  initialPaperHeight: 430,
   lineHeight: 39,
   typeSize: 33,
   paperBottom: 2607,
@@ -19,9 +29,16 @@ const FIGMA = {
 
 const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
 const maxFeed = FIGMA.maxPaperHeight - FIGMA.initialPaperHeight;
+const initialZoom = 1;
+const defaultZoom = 1.5;
 const fontSpec = `${FIGMA.typeSize}px "Special Elite", "Courier New", monospace`;
 const slugTransitionMs = 90;
-const lineSpace = FIGMA.lineHeight - FIGMA.typeSize;
+const lineAdvances: Record<LineSpacing, number> = {
+  0: 24,
+  1: FIGMA.lineHeight,
+  1.5: FIGMA.lineHeight * 1.5,
+  2: FIGMA.lineHeight * 2,
+};
 
 const ASSETS = {
   platen: "/assets/platen.png",
@@ -52,6 +69,11 @@ type LineBreak = {
   afterLineIndex: number;
   spacing: LineSpacing;
   advance: number;
+};
+type CarriageDrag = {
+  pointerId: number;
+  startClientX: number;
+  startAdvance: number;
 };
 type SlugConfig = {
   id: number;
@@ -102,7 +124,7 @@ function shouldPlayReturnSound(line: string, cursorColumn: number): boolean {
 }
 
 function getLineAdvance(spacing: LineSpacing): number {
-  return FIGMA.typeSize + lineSpace * spacing;
+  return lineAdvances[spacing];
 }
 
 function getLineTops(lineBreaks: LineBreak[], lineCount: number): number[] {
@@ -113,6 +135,15 @@ function getLineTops(lineBreaks: LineBreak[], lineCount: number): number[] {
   }
 
   return tops;
+}
+
+function getLinePrefix(line: string, column: number): string {
+  if (column <= line.length) return line.slice(0, column);
+  return line.padEnd(column, " ");
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function useSpecialEliteMeasure() {
@@ -148,13 +179,15 @@ function App() {
   const [activeSlugId, setActiveSlugId] = useState<number | null>(null);
   const [isSlugPressed, setIsSlugPressed] = useState(false);
   const [stageScale, setStageScale] = useState(1);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(initialZoom);
   const [lineSpacing, setLineSpacing] = useState<LineSpacing>(1);
   const [cursorColumn, setCursorColumn] = useState(0);
+  const [isCarriageDragging, setIsCarriageDragging] = useState(false);
   const releaseTimeoutRef = useRef<number | null>(null);
   const linesRef = useRef(lines);
   const lineBreaksRef = useRef(lineBreaks);
   const cursorColumnRef = useRef(cursorColumn);
+  const carriageDragRef = useRef<CarriageDrag | null>(null);
   const marginDingedRef = useRef(false);
   const keyPressAudioRef = useRef<HTMLAudioElement[]>([]);
   const dingAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -166,7 +199,7 @@ function App() {
   const lineTops = useMemo(() => getLineTops(lineBreaks, lines.length), [lineBreaks, lines.length]);
   const currentLineIndex = lines.length - 1;
   const currentLine = lines[currentLineIndex] ?? "";
-  const currentAdvance = Math.min(measure(currentLine.slice(0, cursorColumn)), maxAdvance);
+  const currentAdvance = Math.min(measure(getLinePrefix(currentLine, cursorColumn)), maxAdvance);
   const carriageX = FIGMA.carriageRightX - currentAdvance;
   const feed = Math.min(lineTops[currentLineIndex] ?? 0, maxFeed);
   const paperTop = FIGMA.paperBottom - (FIGMA.initialPaperHeight + feed);
@@ -175,6 +208,11 @@ function App() {
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const zoomFrame = window.requestAnimationFrame(() => setZoom(defaultZoom));
+    return () => window.cancelAnimationFrame(zoomFrame);
   }, []);
 
   useEffect(() => {
@@ -250,6 +288,39 @@ function App() {
     next[next.length - 1] = line;
     setDocumentLines(next);
     setDocumentCursorColumn(nextCursorColumn);
+  };
+
+  const getClosestCursorColumn = (line: string, targetAdvance: number) => {
+    let bestColumn = 0;
+    let bestDistance = Math.abs(targetAdvance);
+    const maxColumns = 160;
+
+    for (let column = 1; column <= maxColumns; column += 1) {
+      const advance = measure(getLinePrefix(line, column));
+      const distance = Math.abs(advance - targetAdvance);
+
+      if (distance < bestDistance) {
+        bestColumn = column;
+        bestDistance = distance;
+      }
+
+      if (advance > maxAdvance && advance > targetAdvance) break;
+    }
+
+    return bestColumn;
+  };
+
+  const fillCurrentLineToCursor = () => {
+    const previous = linesRef.current;
+    const index = previous.length - 1;
+    const line = previous[index] ?? "";
+    const cursor = cursorColumnRef.current;
+
+    if (cursor <= line.length) return;
+
+    const next = [...previous];
+    next[index] = line.padEnd(cursor, " ");
+    setDocumentLines(next);
   };
 
   const playAudio = (audio: HTMLAudioElement | null | undefined) => {
@@ -331,10 +402,11 @@ function App() {
     const index = previous.length - 1;
     const line = previous[index] ?? "";
     const cursor = cursorColumnRef.current;
-    const candidate = `${line.slice(0, cursor)}${character}${line.slice(cursor + 1)}`;
+    const sourceLine = cursor > line.length ? line.padEnd(cursor, " ") : line;
+    const candidate = `${sourceLine.slice(0, cursor)}${character}${sourceLine.slice(cursor + 1)}`;
     const nextCursor = cursor + 1;
 
-    if (measure(candidate.slice(0, nextCursor)) > maxAdvance) {
+    if (measure(getLinePrefix(candidate, nextCursor)) > maxAdvance) {
       if (!marginDingedRef.current) playDing();
       marginDingedRef.current = true;
       setNotice("margin");
@@ -399,6 +471,47 @@ function App() {
     }
 
     addCharacter(" ");
+  };
+
+  const startCarriageDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if ((event.target as Element).closest("[data-page-surface]")) return;
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    carriageDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startAdvance: measure(getLinePrefix(linesRef.current[linesRef.current.length - 1] ?? "", cursorColumnRef.current)),
+    };
+    setIsCarriageDragging(true);
+    inputRef.current?.focus();
+  };
+
+  const updateCarriageDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = carriageDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    const effectiveScale = stageScale * zoom || 1;
+    const targetAdvance = clamp(drag.startAdvance - (event.clientX - drag.startClientX) / effectiveScale, 0, maxAdvance);
+    const line = linesRef.current[linesRef.current.length - 1] ?? "";
+    setDocumentCursorColumn(getClosestCursorColumn(line, targetAdvance));
+    marginDingedRef.current = false;
+    setNotice("ready");
+  };
+
+  const finishCarriageDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = carriageDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    carriageDragRef.current = null;
+    setIsCarriageDragging(false);
+    fillCurrentLineToCursor();
+    inputRef.current?.focus();
   };
 
   const handleZoomChange = (event: ChangeEvent<HTMLSelectElement>) => {
@@ -494,10 +607,11 @@ function App() {
         <label>
           Zoom
           <select value={zoom} onChange={handleZoomChange}>
-            <option value={1}>Default</option>
-            <option value={1.25}>125%</option>
-            <option value={1.5}>150%</option>
-            <option value={1.75}>175%</option>
+            <option value={1}>50%</option>
+            <option value={1.25}>75%</option>
+            <option value={1.5}>Default</option>
+            <option value={1.75}>125%</option>
+            <option value={2}>150%</option>
           </select>
         </label>
         <label>
@@ -517,13 +631,20 @@ function App() {
       <section ref={viewportRef} className="machine-viewport" aria-label="Interactive typewriter">
         <div className="machine-stage" style={{ transform: `translateX(-50%) scale(${stageScale * zoom})` }}>
           <div
-            className={`carriage ${notice !== "ready" ? "carriage-alert" : ""}`}
+            className={`carriage ${notice !== "ready" ? "carriage-alert" : ""} ${
+              isCarriageDragging ? "is-dragging" : ""
+            }`}
             style={{ transform: `translate3d(${carriageX}px, 0, 0)` }}
+            onPointerDown={startCarriageDrag}
+            onPointerMove={updateCarriageDrag}
+            onPointerUp={finishCarriageDrag}
+            onPointerCancel={finishCarriageDrag}
           >
             <img className="figma-asset platen" src={ASSETS.platen} alt="" draggable="false" />
 
             <div
               className="paper"
+              data-page-surface
               style={{
                 top: paperTop,
                 height: FIGMA.paperBottom - paperTop,
@@ -535,6 +656,7 @@ function App() {
 
             <div
               className="typed-paper-text"
+              data-page-surface
               style={{
                 top: textTop,
               }}

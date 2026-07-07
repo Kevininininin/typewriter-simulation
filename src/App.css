@@ -113,6 +113,7 @@ select {
   width: 4621px;
   height: 2894px;
   transform-origin: bottom center;
+  transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .figma-asset {
@@ -130,7 +131,14 @@ select {
   width: 3098px;
   height: 2607px;
   transition: transform 110ms ease-out;
+  cursor: grab;
+  touch-action: none;
   will-change: transform;
+}
+
+.carriage.is-dragging {
+  cursor: grabbing;
+  transition: none;
 }
 
 .carriage-alert {
@@ -147,6 +155,7 @@ select {
 .paper {
   position: absolute;
   left: 836px;
+  cursor: default;
   border-radius: 0 0 10px 10px;
   background:
     linear-gradient(180deg, rgba(255, 252, 245, 0.2), rgba(232, 219, 197, 0) 28%),
@@ -186,6 +195,7 @@ select {
   white-space: pre-wrap;
   word-break: normal;
   overflow-wrap: normal;
+  cursor: text;
   transition: top 130ms ease-out;
 }
 
