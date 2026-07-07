@@ -1,4 +1,4 @@
-import { ClipboardEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, CSSProperties, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 const FIGMA = {
   frameWidth: 4621,
@@ -19,16 +19,57 @@ const FIGMA = {
 const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
 const maxLineIndex = Math.floor(FIGMA.maxFeed / FIGMA.lineHeight);
 const fontSpec = `${FIGMA.typeSize}px "Special Elite", "Courier New", monospace`;
+const slugActivationMs = 95;
+const slugFailsafeMs = 420;
+const slugReleaseTailMs = 65;
 
 const ASSETS = {
   platen: "/assets/platen.png",
   paperPressRoller: "/assets/paper-press-roller.png",
   pointGuideGuard: "/assets/point-guide-guard.png",
-  colorRibbonSlugs: "/assets/color-ribbon-slugs.png",
+  colorRibbonSlugsIdle: "/assets/color-ribbon-slugs-idle.png",
+  colorRibbonSlugsActive: "/assets/color-ribbon-slugs-active-hidden-export.png",
+  slug: "/assets/slug-center.png",
   typewriterBody: "/assets/typewriter-body.png",
 };
 
 type Notice = "ready" | "margin" | "page-end";
+type SlugConfig = {
+  id: number;
+  wrapperX: number;
+  wrapperY: number;
+  wrapperWidth: number;
+  wrapperHeight: number;
+  slugWidth: number;
+  slugHeight: number;
+  angle: number;
+  flipY?: boolean;
+};
+
+const slugConfigs: SlugConfig[] = [
+  { id: 0, wrapperX: 2325, wrapperY: 2437, wrapperWidth: 81, wrapperHeight: 432, slugWidth: 81, slugHeight: 432, angle: 0 },
+  { id: 1, wrapperX: 2243.34, wrapperY: 2433.25, wrapperWidth: 164.33, wrapperHeight: 439.49, slugWidth: 81, slugHeight: 432, angle: 11.33 },
+  { id: 2, wrapperX: 2176.86, wrapperY: 2424.6, wrapperWidth: 237.27, wrapperHeight: 430.81, slugWidth: 81, slugHeight: 432, angle: 22.05 },
+  { id: 3, wrapperX: 2096.28, wrapperY: 2419.76, wrapperWidth: 320.45, wrapperHeight: 396.48, slugWidth: 81, slugHeight: 432, angle: 36.19 },
+  { id: 4, wrapperX: 2036.97, wrapperY: 2418.12, wrapperWidth: 373.07, wrapperHeight: 351.76, slugWidth: 81, slugHeight: 432, angle: 47.46 },
+  { id: 5, wrapperX: 1925.45, wrapperY: 2415.38, wrapperWidth: 487.96, wrapperHeight: 371.27, slugWidth: 81, slugHeight: 536.78, angle: 55.43 },
+  { id: 6, wrapperX: 1896.55, wrapperY: 2415, wrapperWidth: 511.76, wrapperHeight: 324.03, slugWidth: 81, slugHeight: 536.78, angle: 61.93 },
+  { id: 7, wrapperX: 2325.61, wrapperY: 2433.25, wrapperWidth: 164.33, wrapperHeight: 439.49, slugWidth: 81, slugHeight: 432, angle: 168.67, flipY: true },
+  { id: 8, wrapperX: 2319.13, wrapperY: 2424.6, wrapperWidth: 237.27, wrapperHeight: 430.81, slugWidth: 81, slugHeight: 432, angle: 157.95, flipY: true },
+  { id: 9, wrapperX: 2316.55, wrapperY: 2419.76, wrapperWidth: 320.45, wrapperHeight: 396.48, slugWidth: 81, slugHeight: 432, angle: 143.81, flipY: true },
+  { id: 10, wrapperX: 2323.24, wrapperY: 2418.12, wrapperWidth: 373.07, wrapperHeight: 351.76, slugWidth: 81, slugHeight: 432, angle: 132.54, flipY: true },
+  { id: 11, wrapperX: 2319.86, wrapperY: 2415.38, wrapperWidth: 487.96, wrapperHeight: 371.27, slugWidth: 81, slugHeight: 536.78, angle: 124.57, flipY: true },
+  { id: 12, wrapperX: 2324.96, wrapperY: 2415, wrapperWidth: 511.76, wrapperHeight: 324.03, slugWidth: 81, slugHeight: 536.78, angle: 118.07, flipY: true },
+];
+
+const slugKeyGroups = ["`1qaz", "2wsx", "3edc", "4rfv5tgb", "6yhn", "7ujm", "8ik,", "9ol.", "0p;/", "-[]", "='\\", "nm", "abcdefghijklmnopqrstuvwxyz0123456789"];
+
+function getSlugIdForKey(key: string): number {
+  const normalized = key.toLowerCase();
+  const groupIndex = slugKeyGroups.findIndex((group) => group.includes(normalized));
+  if (groupIndex >= 0) return groupIndex;
+  return normalized.charCodeAt(0) % slugConfigs.length;
+}
 
 function isPrintableKey(event: KeyboardEvent): boolean {
   return event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
@@ -63,7 +104,11 @@ function useSpecialEliteMeasure() {
 function App() {
   const [lines, setLines] = useState<string[]>([""]);
   const [notice, setNotice] = useState<Notice>("ready");
+  const [activeSlugId, setActiveSlugId] = useState<number | null>(null);
+  const [strikeCount, setStrikeCount] = useState(0);
   const [stageScale, setStageScale] = useState(1);
+  const strikeTimeoutRef = useRef<number | null>(null);
+  const strikeStartedAtRef = useRef(0);
   const viewportRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { measure } = useSpecialEliteMeasure();
@@ -101,6 +146,35 @@ function App() {
     const timeout = window.setTimeout(() => setNotice("ready"), 700);
     return () => window.clearTimeout(timeout);
   }, [notice]);
+
+  useEffect(() => {
+    return () => {
+      if (strikeTimeoutRef.current) window.clearTimeout(strikeTimeoutRef.current);
+    };
+  }, []);
+
+  const strikeSlug = (key: string) => {
+    if (strikeTimeoutRef.current) window.clearTimeout(strikeTimeoutRef.current);
+
+    strikeStartedAtRef.current = performance.now();
+    setActiveSlugId(getSlugIdForKey(key));
+    setStrikeCount((count) => count + 1);
+    strikeTimeoutRef.current = window.setTimeout(() => {
+      setActiveSlugId(null);
+      strikeTimeoutRef.current = null;
+    }, slugFailsafeMs);
+  };
+
+  const releaseSlug = () => {
+    if (strikeTimeoutRef.current) window.clearTimeout(strikeTimeoutRef.current);
+
+    const elapsed = performance.now() - strikeStartedAtRef.current;
+    const remainingStrike = Math.max(slugActivationMs - elapsed, slugReleaseTailMs);
+    strikeTimeoutRef.current = window.setTimeout(() => {
+      setActiveSlugId(null);
+      strikeTimeoutRef.current = null;
+    }, remainingStrike);
+  };
 
   const resetDocument = () => {
     setLines([""]);
@@ -169,24 +243,28 @@ function App() {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
+      strikeSlug(event.key);
       addReturn();
       return;
     }
 
     if (event.key === "Backspace") {
       event.preventDefault();
+      strikeSlug(event.key);
       removeCharacter();
       return;
     }
 
     if (event.key === "Tab") {
       event.preventDefault();
+      strikeSlug(event.key);
       typeText("    ");
       return;
     }
 
     if (isPrintableKey(event)) {
       event.preventDefault();
+      if (event.key !== " ") strikeSlug(event.key);
       addCharacter(event.key);
     }
   };
@@ -212,6 +290,7 @@ function App() {
         value=""
         onChange={() => undefined}
         onKeyDown={handleKeyDown}
+        onKeyUp={releaseSlug}
         onPaste={handlePaste}
         autoFocus
       />
@@ -260,9 +339,48 @@ function App() {
             />
           </div>
 
-          <div className="fixed-typewriter-body">
+          <div className="fixed-typewriter-body" data-active-slug-id={activeSlugId ?? ""}>
             <img className="figma-asset point-guide-guard" src={ASSETS.pointGuideGuard} alt="" draggable="false" />
-            <img className="figma-asset color-ribbon-slugs" src={ASSETS.colorRibbonSlugs} alt="" draggable="false" />
+            <img
+              className={`figma-asset color-ribbon-slugs-idle ${activeSlugId === null ? "is-visible" : ""}`}
+              src={ASSETS.colorRibbonSlugsIdle}
+              alt=""
+              draggable="false"
+            />
+            <img
+              className={`figma-asset color-ribbon-slugs-active ${activeSlugId !== null ? "is-visible" : ""}`}
+              src={ASSETS.colorRibbonSlugsActive}
+              alt=""
+              draggable="false"
+            />
+            <div className="slug-stage" aria-hidden="true">
+              {slugConfigs.map((slug) => (
+                <div
+                  key={`${slug.id}-${activeSlugId === slug.id ? strikeCount : 0}`}
+                  className={`slug-slot ${activeSlugId === slug.id ? "is-active" : ""}`}
+                  style={{
+                    left: slug.wrapperX,
+                    top: slug.wrapperY,
+                    width: slug.wrapperWidth,
+                    height: slug.wrapperHeight,
+                    "--slug-angle": `${slug.angle}deg`,
+                    "--slug-flip": slug.flipY ? -1 : 1,
+                  } as CSSProperties}
+                  data-strike={activeSlugId === slug.id ? strikeCount : undefined}
+                >
+                  <img
+                    className="slug-piece"
+                    src={ASSETS.slug}
+                    alt=""
+                    draggable="false"
+                    style={{
+                      width: slug.slugWidth,
+                      height: slug.slugHeight,
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
             <img className="figma-asset typewriter-body" src={ASSETS.typewriterBody} alt="" draggable="false" />
             <div className="typing-cursor" style={{ left: FIGMA.cursorX, top: FIGMA.cursorY }} />
           </div>
