@@ -75,6 +75,11 @@ type CarriageDrag = {
   startClientX: number;
   startAdvance: number;
 };
+type PageDrag = {
+  pointerId: number;
+  startClientY: number;
+  startFeed: number;
+};
 type SlugConfig = {
   id: number;
   slugWidth: number;
@@ -137,6 +142,13 @@ function getLineTops(lineBreaks: LineBreak[], lineCount: number): number[] {
   return tops;
 }
 
+function normalizeLineBreaks(lineBreaks: LineBreak[]): LineBreak[] {
+  return lineBreaks.map((lineBreak, index) => ({
+    ...lineBreak,
+    afterLineIndex: index,
+  }));
+}
+
 function getLinePrefix(line: string, column: number): string {
   if (column <= line.length) return line.slice(0, column);
   return line.padEnd(column, " ");
@@ -182,12 +194,17 @@ function App() {
   const [zoom, setZoom] = useState(initialZoom);
   const [lineSpacing, setLineSpacing] = useState<LineSpacing>(1);
   const [cursorColumn, setCursorColumn] = useState(0);
+  const [currentLineIndex, setCurrentLineIndex] = useState(0);
   const [isCarriageDragging, setIsCarriageDragging] = useState(false);
+  const [isPageDragging, setIsPageDragging] = useState(false);
+  const [dragFeed, setDragFeed] = useState<number | null>(null);
   const releaseTimeoutRef = useRef<number | null>(null);
   const linesRef = useRef(lines);
   const lineBreaksRef = useRef(lineBreaks);
   const cursorColumnRef = useRef(cursorColumn);
+  const currentLineIndexRef = useRef(currentLineIndex);
   const carriageDragRef = useRef<CarriageDrag | null>(null);
+  const pageDragRef = useRef<PageDrag | null>(null);
   const marginDingedRef = useRef(false);
   const keyPressAudioRef = useRef<HTMLAudioElement[]>([]);
   const dingAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -197,14 +214,12 @@ function App() {
   const { measure } = useSpecialEliteMeasure();
 
   const lineTops = useMemo(() => getLineTops(lineBreaks, lines.length), [lineBreaks, lines.length]);
-  const currentLineIndex = lines.length - 1;
   const currentLine = lines[currentLineIndex] ?? "";
   const currentAdvance = Math.min(measure(getLinePrefix(currentLine, cursorColumn)), maxAdvance);
   const carriageX = FIGMA.carriageRightX - currentAdvance;
-  const feed = Math.min(lineTops[currentLineIndex] ?? 0, maxFeed);
+  const feed = Math.min(dragFeed ?? lineTops[currentLineIndex] ?? 0, maxFeed);
   const paperTop = FIGMA.paperBottom - (FIGMA.initialPaperHeight + feed);
   const textTop = FIGMA.textBaseTop - feed;
-  const typedText = lines.join("\n");
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -226,6 +241,10 @@ function App() {
   useEffect(() => {
     cursorColumnRef.current = cursorColumn;
   }, [cursorColumn]);
+
+  useEffect(() => {
+    currentLineIndexRef.current = currentLineIndex;
+  }, [currentLineIndex]);
 
   useEffect(() => {
     keyPressAudioRef.current = AUDIO.keyPresses.map((source) => {
@@ -274,8 +293,9 @@ function App() {
   };
 
   const setDocumentLineBreaks = (nextLineBreaks: LineBreak[]) => {
-    lineBreaksRef.current = nextLineBreaks;
-    setLineBreaks(nextLineBreaks);
+    const normalizedLineBreaks = normalizeLineBreaks(nextLineBreaks);
+    lineBreaksRef.current = normalizedLineBreaks;
+    setLineBreaks(normalizedLineBreaks);
   };
 
   const setDocumentCursorColumn = (nextCursorColumn: number) => {
@@ -283,11 +303,40 @@ function App() {
     setCursorColumn(nextCursorColumn);
   };
 
+  const setDocumentLineIndex = (nextLineIndex: number) => {
+    currentLineIndexRef.current = nextLineIndex;
+    setCurrentLineIndex(nextLineIndex);
+  };
+
   const setCurrentLine = (line: string, nextCursorColumn: number) => {
     const next = [...linesRef.current];
-    next[next.length - 1] = line;
+    next[currentLineIndexRef.current] = line;
     setDocumentLines(next);
     setDocumentCursorColumn(nextCursorColumn);
+  };
+
+  const ensureLineIndexExists = (targetLineIndex: number) => {
+    const nextLines = [...linesRef.current];
+    const nextLineBreaks = [...lineBreaksRef.current];
+
+    while (nextLines.length <= targetLineIndex) {
+      const tops = getLineTops(nextLineBreaks, nextLines.length);
+      const currentFeed = tops[nextLines.length - 1] ?? 0;
+      const advance = getLineAdvance(lineSpacing);
+
+      if (currentFeed + advance > maxFeed) break;
+
+      nextLineBreaks.push({
+        afterLineIndex: nextLineBreaks.length,
+        spacing: lineSpacing,
+        advance,
+      });
+      nextLines.push("");
+    }
+
+    setDocumentLines(nextLines);
+    setDocumentLineBreaks(nextLineBreaks);
+    return Math.min(targetLineIndex, nextLines.length - 1);
   };
 
   const getClosestCursorColumn = (line: string, targetAdvance: number) => {
@@ -310,9 +359,36 @@ function App() {
     return bestColumn;
   };
 
+  const getClosestLineIndex = (targetFeed: number) => {
+    const currentLines = linesRef.current;
+    const currentLineBreaks = lineBreaksRef.current;
+    const tops = getLineTops(currentLineBreaks, currentLines.length);
+    const advance = getLineAdvance(lineSpacing);
+    let feedCursor = tops[tops.length - 1] ?? 0;
+
+    while (feedCursor + advance <= maxFeed) {
+      feedCursor += advance;
+      tops.push(feedCursor);
+    }
+
+    let bestIndex = 0;
+    let bestDistance = Math.abs(targetFeed);
+
+    for (let index = 0; index < tops.length; index += 1) {
+      const distance = Math.abs(tops[index] - targetFeed);
+
+      if (distance < bestDistance) {
+        bestIndex = index;
+        bestDistance = distance;
+      }
+    }
+
+    return bestIndex;
+  };
+
   const fillCurrentLineToCursor = () => {
     const previous = linesRef.current;
-    const index = previous.length - 1;
+    const index = currentLineIndexRef.current;
     const line = previous[index] ?? "";
     const cursor = cursorColumnRef.current;
 
@@ -363,7 +439,9 @@ function App() {
   const resetDocument = () => {
     setDocumentLines([""]);
     setDocumentLineBreaks([]);
+    setDocumentLineIndex(0);
     setDocumentCursorColumn(0);
+    setDragFeed(null);
     marginDingedRef.current = false;
     setNotice("ready");
     inputRef.current?.focus();
@@ -372,9 +450,10 @@ function App() {
   const addReturn = () => {
     const previous = linesRef.current;
     const previousLineBreaks = lineBreaksRef.current;
-    const line = previous[previous.length - 1] ?? "";
+    const index = currentLineIndexRef.current;
+    const line = previous[index] ?? "";
     const advance = getLineAdvance(lineSpacing);
-    const currentFeed = getLineTops(previousLineBreaks, previous.length)[previous.length - 1] ?? 0;
+    const currentFeed = getLineTops(previousLineBreaks, previous.length)[index] ?? 0;
 
     if (currentFeed + advance > maxFeed) {
       setNotice("page-end");
@@ -383,15 +462,17 @@ function App() {
 
     if (shouldPlayReturnSound(line, cursorColumnRef.current)) playNewLine();
     setNotice("ready");
-    setDocumentLines([...previous, ""]);
-    setDocumentLineBreaks([
-      ...previousLineBreaks,
-      {
-        afterLineIndex: previous.length - 1,
-        spacing: lineSpacing,
-        advance,
-      },
-    ]);
+    const nextLines = [...previous];
+    const nextLineBreaks = [...previousLineBreaks];
+    nextLines.splice(index + 1, 0, "");
+    nextLineBreaks.splice(index, 0, {
+      afterLineIndex: index,
+      spacing: lineSpacing,
+      advance,
+    });
+    setDocumentLines(nextLines);
+    setDocumentLineBreaks(nextLineBreaks);
+    setDocumentLineIndex(index + 1);
     setDocumentCursorColumn(0);
     marginDingedRef.current = false;
     return true;
@@ -399,7 +480,7 @@ function App() {
 
   const addCharacter = (character: string) => {
     const previous = linesRef.current;
-    const index = previous.length - 1;
+    const index = currentLineIndexRef.current;
     const line = previous[index] ?? "";
     const cursor = cursorColumnRef.current;
     const sourceLine = cursor > line.length ? line.padEnd(cursor, " ") : line;
@@ -421,7 +502,7 @@ function App() {
   const removeCharacter = () => {
     const previous = linesRef.current;
     const next = [...previous];
-    const index = next.length - 1;
+    const index = currentLineIndexRef.current;
     const line = next[index] ?? "";
     const cursor = cursorColumnRef.current;
 
@@ -429,11 +510,14 @@ function App() {
       next[index] = `${line.slice(0, cursor - 1)}${line.slice(cursor)}`;
       setDocumentLines(next);
       setDocumentCursorColumn(cursor - 1);
-    } else if (next.length > 1) {
-      next.pop();
+    } else if (index > 0) {
+      next.splice(index, 1);
       setDocumentLines(next);
-      setDocumentLineBreaks(lineBreaksRef.current.slice(0, -1));
-      setDocumentCursorColumn(next[next.length - 1]?.length ?? 0);
+      const nextLineBreaks = [...lineBreaksRef.current];
+      nextLineBreaks.splice(index - 1, 1);
+      setDocumentLineBreaks(nextLineBreaks);
+      setDocumentLineIndex(index - 1);
+      setDocumentCursorColumn(next[index - 1]?.length ?? 0);
     }
 
     marginDingedRef.current = false;
@@ -460,7 +544,7 @@ function App() {
   };
 
   const moveCursorRight = () => {
-    const line = linesRef.current[linesRef.current.length - 1] ?? "";
+    const line = linesRef.current[currentLineIndexRef.current] ?? "";
     const cursor = cursorColumnRef.current;
 
     if (cursor < line.length) {
@@ -481,7 +565,7 @@ function App() {
     carriageDragRef.current = {
       pointerId: event.pointerId,
       startClientX: event.clientX,
-      startAdvance: measure(getLinePrefix(linesRef.current[linesRef.current.length - 1] ?? "", cursorColumnRef.current)),
+      startAdvance: measure(getLinePrefix(linesRef.current[currentLineIndexRef.current] ?? "", cursorColumnRef.current)),
     };
     setIsCarriageDragging(true);
     inputRef.current?.focus();
@@ -494,7 +578,7 @@ function App() {
     event.preventDefault();
     const effectiveScale = stageScale * zoom || 1;
     const targetAdvance = clamp(drag.startAdvance - (event.clientX - drag.startClientX) / effectiveScale, 0, maxAdvance);
-    const line = linesRef.current[linesRef.current.length - 1] ?? "";
+    const line = linesRef.current[currentLineIndexRef.current] ?? "";
     setDocumentCursorColumn(getClosestCursorColumn(line, targetAdvance));
     marginDingedRef.current = false;
     setNotice("ready");
@@ -511,6 +595,52 @@ function App() {
     carriageDragRef.current = null;
     setIsCarriageDragging(false);
     fillCurrentLineToCursor();
+    inputRef.current?.focus();
+  };
+
+  const startPageDrag = (event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pageDragRef.current = {
+      pointerId: event.pointerId,
+      startClientY: event.clientY,
+      startFeed: lineTops[currentLineIndexRef.current] ?? 0,
+    };
+    setIsPageDragging(true);
+    inputRef.current?.focus();
+  };
+
+  const updatePageDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = pageDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const effectiveScale = stageScale * zoom || 1;
+    const targetFeed = clamp(drag.startFeed - (event.clientY - drag.startClientY) / effectiveScale, 0, maxFeed);
+    setDragFeed(targetFeed);
+    setNotice("ready");
+  };
+
+  const finishPageDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = pageDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    const effectiveScale = stageScale * zoom || 1;
+    const targetFeed = clamp(drag.startFeed - (event.clientY - drag.startClientY) / effectiveScale, 0, maxFeed);
+    const snappedLineIndex = ensureLineIndexExists(getClosestLineIndex(targetFeed));
+    setDocumentLineIndex(snappedLineIndex);
+    pageDragRef.current = null;
+    setIsPageDragging(false);
+    setDragFeed(null);
     inputRef.current?.focus();
   };
 
@@ -580,12 +710,6 @@ function App() {
     typeText(event.clipboardData.getData("text"));
   };
 
-  const statusText =
-    notice === "margin"
-      ? "Margin reached"
-      : notice === "page-end"
-        ? "End of page"
-        : `${typedText.length} characters`;
   const isRibbonActive = activeSlugId !== null && isSlugPressed;
 
   return (
@@ -602,8 +726,7 @@ function App() {
         autoFocus
       />
 
-      <div className="app-toolbar" aria-live="polite">
-        <span>{statusText}</span>
+      <div className="app-toolbar">
         <label>
           Zoom
           <select value={zoom} onChange={handleZoomChange}>
@@ -633,7 +756,7 @@ function App() {
           <div
             className={`carriage ${notice !== "ready" ? "carriage-alert" : ""} ${
               isCarriageDragging ? "is-dragging" : ""
-            }`}
+            } ${isPageDragging ? "is-page-dragging" : ""}`}
             style={{ transform: `translate3d(${carriageX}px, 0, 0)` }}
             onPointerDown={startCarriageDrag}
             onPointerMove={updateCarriageDrag}
@@ -645,6 +768,10 @@ function App() {
             <div
               className="paper"
               data-page-surface
+              onPointerDown={startPageDrag}
+              onPointerMove={updatePageDrag}
+              onPointerUp={finishPageDrag}
+              onPointerCancel={finishPageDrag}
               style={{
                 top: paperTop,
                 height: FIGMA.paperBottom - paperTop,
@@ -657,6 +784,10 @@ function App() {
             <div
               className="typed-paper-text"
               data-page-surface
+              onPointerDown={startPageDrag}
+              onPointerMove={updatePageDrag}
+              onPointerUp={finishPageDrag}
+              onPointerCancel={finishPageDrag}
               style={{
                 top: textTop,
               }}

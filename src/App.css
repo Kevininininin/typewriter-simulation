@@ -103,7 +103,7 @@ select {
   justify-self: center;
   width: min(100vw, calc(100vh * 4621 / 2894));
   height: min(100vh, calc(100vw * 2894 / 4621));
-  overflow: hidden;
+  overflow: visible;
 }
 
 .machine-stage {
@@ -113,7 +113,7 @@ select {
   width: 4621px;
   height: 2894px;
   transform-origin: bottom center;
-  transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 1400ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .figma-asset {
@@ -155,7 +155,8 @@ select {
 .paper {
   position: absolute;
   left: 836px;
-  cursor: default;
+  cursor: ns-resize;
+  touch-action: none;
   border-radius: 0 0 10px 10px;
   background:
     linear-gradient(180deg, rgba(255, 252, 245, 0.2), rgba(232, 219, 197, 0) 28%),
@@ -195,8 +196,15 @@ select {
   white-space: pre-wrap;
   word-break: normal;
   overflow-wrap: normal;
-  cursor: text;
+  cursor: ns-resize;
+  touch-action: none;
   transition: top 130ms ease-out;
+}
+
+.carriage.is-page-dragging .paper,
+.carriage.is-page-dragging .typed-paper-text {
+  cursor: ns-resize;
+  transition: none;
 }
 
 .typed-paper-line {
