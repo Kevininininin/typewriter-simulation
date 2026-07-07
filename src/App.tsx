@@ -19,9 +19,7 @@ const FIGMA = {
 const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
 const maxLineIndex = Math.floor(FIGMA.maxFeed / FIGMA.lineHeight);
 const fontSpec = `${FIGMA.typeSize}px "Special Elite", "Courier New", monospace`;
-const slugActivationMs = 95;
-const slugFailsafeMs = 420;
-const slugReleaseTailMs = 65;
+const slugTransitionMs = 90;
 
 const ASSETS = {
   platen: "/assets/platen.png",
@@ -36,30 +34,32 @@ const ASSETS = {
 type Notice = "ready" | "margin" | "page-end";
 type SlugConfig = {
   id: number;
-  wrapperX: number;
-  wrapperY: number;
-  wrapperWidth: number;
-  wrapperHeight: number;
   slugWidth: number;
   slugHeight: number;
   angle: number;
-  flipY?: boolean;
 };
 
+const slugPivot = {
+  x: 2365.5,
+  y: 2437,
+};
+
+const slugRestOffset = 227;
+
 const slugConfigs: SlugConfig[] = [
-  { id: 0, wrapperX: 2325, wrapperY: 2437, wrapperWidth: 81, wrapperHeight: 432, slugWidth: 81, slugHeight: 432, angle: 0 },
-  { id: 1, wrapperX: 2243.34, wrapperY: 2433.25, wrapperWidth: 164.33, wrapperHeight: 439.49, slugWidth: 81, slugHeight: 432, angle: 11.33 },
-  { id: 2, wrapperX: 2176.86, wrapperY: 2424.6, wrapperWidth: 237.27, wrapperHeight: 430.81, slugWidth: 81, slugHeight: 432, angle: 22.05 },
-  { id: 3, wrapperX: 2096.28, wrapperY: 2419.76, wrapperWidth: 320.45, wrapperHeight: 396.48, slugWidth: 81, slugHeight: 432, angle: 36.19 },
-  { id: 4, wrapperX: 2036.97, wrapperY: 2418.12, wrapperWidth: 373.07, wrapperHeight: 351.76, slugWidth: 81, slugHeight: 432, angle: 47.46 },
-  { id: 5, wrapperX: 1925.45, wrapperY: 2415.38, wrapperWidth: 487.96, wrapperHeight: 371.27, slugWidth: 81, slugHeight: 536.78, angle: 55.43 },
-  { id: 6, wrapperX: 1896.55, wrapperY: 2415, wrapperWidth: 511.76, wrapperHeight: 324.03, slugWidth: 81, slugHeight: 536.78, angle: 61.93 },
-  { id: 7, wrapperX: 2325.61, wrapperY: 2433.25, wrapperWidth: 164.33, wrapperHeight: 439.49, slugWidth: 81, slugHeight: 432, angle: 168.67, flipY: true },
-  { id: 8, wrapperX: 2319.13, wrapperY: 2424.6, wrapperWidth: 237.27, wrapperHeight: 430.81, slugWidth: 81, slugHeight: 432, angle: 157.95, flipY: true },
-  { id: 9, wrapperX: 2316.55, wrapperY: 2419.76, wrapperWidth: 320.45, wrapperHeight: 396.48, slugWidth: 81, slugHeight: 432, angle: 143.81, flipY: true },
-  { id: 10, wrapperX: 2323.24, wrapperY: 2418.12, wrapperWidth: 373.07, wrapperHeight: 351.76, slugWidth: 81, slugHeight: 432, angle: 132.54, flipY: true },
-  { id: 11, wrapperX: 2319.86, wrapperY: 2415.38, wrapperWidth: 487.96, wrapperHeight: 371.27, slugWidth: 81, slugHeight: 536.78, angle: 124.57, flipY: true },
-  { id: 12, wrapperX: 2324.96, wrapperY: 2415, wrapperWidth: 511.76, wrapperHeight: 324.03, slugWidth: 81, slugHeight: 536.78, angle: 118.07, flipY: true },
+  { id: 0, slugWidth: 81, slugHeight: 432, angle: 0 },
+  { id: 1, slugWidth: 81, slugHeight: 432, angle: 11.33 },
+  { id: 2, slugWidth: 81, slugHeight: 432, angle: 22.05 },
+  { id: 3, slugWidth: 81, slugHeight: 432, angle: 36.19 },
+  { id: 4, slugWidth: 81, slugHeight: 432, angle: 47.46 },
+  { id: 5, slugWidth: 81, slugHeight: 536.78, angle: 55.43 },
+  { id: 6, slugWidth: 81, slugHeight: 536.78, angle: 61.93 },
+  { id: 7, slugWidth: 81, slugHeight: 432, angle: -11.33 },
+  { id: 8, slugWidth: 81, slugHeight: 432, angle: -22.05 },
+  { id: 9, slugWidth: 81, slugHeight: 432, angle: -36.19 },
+  { id: 10, slugWidth: 81, slugHeight: 432, angle: -47.46 },
+  { id: 11, slugWidth: 81, slugHeight: 536.78, angle: -55.43 },
+  { id: 12, slugWidth: 81, slugHeight: 536.78, angle: -61.93 },
 ];
 
 const slugKeyGroups = ["`1qaz", "2wsx", "3edc", "4rfv5tgb", "6yhn", "7ujm", "8ik,", "9ol.", "0p;/", "-[]", "='\\", "nm", "abcdefghijklmnopqrstuvwxyz0123456789"];
@@ -105,10 +105,9 @@ function App() {
   const [lines, setLines] = useState<string[]>([""]);
   const [notice, setNotice] = useState<Notice>("ready");
   const [activeSlugId, setActiveSlugId] = useState<number | null>(null);
-  const [strikeCount, setStrikeCount] = useState(0);
+  const [isSlugPressed, setIsSlugPressed] = useState(false);
   const [stageScale, setStageScale] = useState(1);
-  const strikeTimeoutRef = useRef<number | null>(null);
-  const strikeStartedAtRef = useRef(0);
+  const releaseTimeoutRef = useRef<number | null>(null);
   const viewportRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { measure } = useSpecialEliteMeasure();
@@ -149,31 +148,25 @@ function App() {
 
   useEffect(() => {
     return () => {
-      if (strikeTimeoutRef.current) window.clearTimeout(strikeTimeoutRef.current);
+      if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
     };
   }, []);
 
-  const strikeSlug = (key: string) => {
-    if (strikeTimeoutRef.current) window.clearTimeout(strikeTimeoutRef.current);
-
-    strikeStartedAtRef.current = performance.now();
+  const pressSlug = (key: string) => {
+    if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
+    releaseTimeoutRef.current = null;
     setActiveSlugId(getSlugIdForKey(key));
-    setStrikeCount((count) => count + 1);
-    strikeTimeoutRef.current = window.setTimeout(() => {
-      setActiveSlugId(null);
-      strikeTimeoutRef.current = null;
-    }, slugFailsafeMs);
+    setIsSlugPressed(true);
   };
 
   const releaseSlug = () => {
-    if (strikeTimeoutRef.current) window.clearTimeout(strikeTimeoutRef.current);
-
-    const elapsed = performance.now() - strikeStartedAtRef.current;
-    const remainingStrike = Math.max(slugActivationMs - elapsed, slugReleaseTailMs);
-    strikeTimeoutRef.current = window.setTimeout(() => {
+    if (activeSlugId === null) return;
+    setIsSlugPressed(false);
+    if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
+    releaseTimeoutRef.current = window.setTimeout(() => {
       setActiveSlugId(null);
-      strikeTimeoutRef.current = null;
-    }, remainingStrike);
+      releaseTimeoutRef.current = null;
+    }, slugTransitionMs);
   };
 
   const resetDocument = () => {
@@ -241,30 +234,32 @@ function App() {
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
+
     if (event.key === "Enter") {
       event.preventDefault();
-      strikeSlug(event.key);
       addReturn();
       return;
     }
 
     if (event.key === "Backspace") {
       event.preventDefault();
-      strikeSlug(event.key);
       removeCharacter();
       return;
     }
 
     if (event.key === "Tab") {
       event.preventDefault();
-      strikeSlug(event.key);
       typeText("    ");
       return;
     }
 
     if (isPrintableKey(event)) {
       event.preventDefault();
-      if (event.key !== " ") strikeSlug(event.key);
+      if (event.key !== " ") pressSlug(event.key);
       addCharacter(event.key);
     }
   };
@@ -280,6 +275,7 @@ function App() {
       : notice === "page-end"
         ? "End of page"
         : `${typedText.length} characters`;
+  const isRibbonActive = activeSlugId !== null && isSlugPressed;
 
   return (
     <main className="app-shell" onPointerDown={() => inputRef.current?.focus()}>
@@ -342,13 +338,13 @@ function App() {
           <div className="fixed-typewriter-body" data-active-slug-id={activeSlugId ?? ""}>
             <img className="figma-asset point-guide-guard" src={ASSETS.pointGuideGuard} alt="" draggable="false" />
             <img
-              className={`figma-asset color-ribbon-slugs-idle ${activeSlugId === null ? "is-visible" : ""}`}
+              className={`figma-asset color-ribbon-slugs-idle ${isRibbonActive ? "" : "is-visible"}`}
               src={ASSETS.colorRibbonSlugsIdle}
               alt=""
               draggable="false"
             />
             <img
-              className={`figma-asset color-ribbon-slugs-active ${activeSlugId !== null ? "is-visible" : ""}`}
+              className={`figma-asset color-ribbon-slugs-active ${isRibbonActive ? "is-visible" : ""}`}
               src={ASSETS.colorRibbonSlugsActive}
               alt=""
               draggable="false"
@@ -356,17 +352,18 @@ function App() {
             <div className="slug-stage" aria-hidden="true">
               {slugConfigs.map((slug) => (
                 <div
-                  key={`${slug.id}-${activeSlugId === slug.id ? strikeCount : 0}`}
-                  className={`slug-slot ${activeSlugId === slug.id ? "is-active" : ""}`}
+                  key={slug.id}
+                  className={`slug-slot ${activeSlugId === slug.id ? "is-visible" : ""} ${
+                    activeSlugId === slug.id && isSlugPressed ? "is-held" : ""
+                  }`}
                   style={{
-                    left: slug.wrapperX,
-                    top: slug.wrapperY,
-                    width: slug.wrapperWidth,
-                    height: slug.wrapperHeight,
+                    "--slug-pivot-x": `${slugPivot.x}px`,
+                    "--slug-pivot-y": `${slugPivot.y}px`,
                     "--slug-angle": `${slug.angle}deg`,
-                    "--slug-flip": slug.flipY ? -1 : 1,
+                    "--slug-width": `${slug.slugWidth}px`,
+                    "--slug-height": `${slug.slugHeight}px`,
+                    "--slug-rest-offset": `${slugRestOffset}px`,
                   } as CSSProperties}
-                  data-strike={activeSlugId === slug.id ? strikeCount : undefined}
                 >
                   <img
                     className="slug-piece"

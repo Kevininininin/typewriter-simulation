@@ -228,31 +228,44 @@ button:focus-visible {
 
 .slug-slot {
   --slug-angle: 0deg;
-  --slug-flip: 1;
+  --slug-pivot-x: 0px;
+  --slug-pivot-y: 0px;
+  --slug-width: 81px;
+  --slug-height: 432px;
+  --slug-rest-offset: 250px;
   position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  left: var(--slug-pivot-x);
+  top: var(--slug-pivot-y);
+  width: 0;
+  height: 0;
   opacity: 0;
   pointer-events: none;
+  transform: rotate(var(--slug-angle));
+  transform-origin: 0 0;
+  transition: opacity 18ms linear;
   user-select: none;
 }
 
-.slug-slot.is-active {
+.slug-slot.is-visible {
   opacity: 1;
 }
 
 .slug-piece {
   display: block;
-  flex: 0 0 auto;
   max-width: none;
   object-fit: fill;
-  transform: rotate(var(--slug-angle)) scaleY(var(--slug-flip)) translateY(110px);
-  transform-origin: center bottom;
+  position: absolute;
+  left: calc(var(--slug-width) / -2);
+  top: 0;
+  width: var(--slug-width);
+  height: var(--slug-height);
+  transform: translateY(var(--slug-rest-offset));
+  transform-origin: center top;
+  transition: transform 90ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.slug-slot.is-active .slug-piece {
-  animation: slug-strike 95ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.slug-slot.is-held .slug-piece {
+  transform: translateY(0);
 }
 
 .typewriter-body {
@@ -282,20 +295,6 @@ button:focus-visible {
 @keyframes carriage-bump {
   50% {
     translate: -12px 0;
-  }
-}
-
-@keyframes slug-strike {
-  0% {
-    transform: rotate(var(--slug-angle)) scaleY(var(--slug-flip)) translateY(118px);
-  }
-
-  52% {
-    transform: rotate(var(--slug-angle)) scaleY(var(--slug-flip)) translateY(-18px);
-  }
-
-  100% {
-    transform: rotate(var(--slug-angle)) scaleY(var(--slug-flip)) translateY(0);
   }
 }
 
