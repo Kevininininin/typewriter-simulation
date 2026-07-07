@@ -10,29 +10,47 @@ import {
   useState,
 } from "react";
 
+const letterWidthInches = 8.5;
+const letterHeightInches = 11;
+const paperWidth = 1672;
+const paperMargin = paperWidth / letterWidthInches;
+const paperPrintableWidth = paperWidth - paperMargin * 2;
+const paperHeight = paperWidth * (letterHeightInches / letterWidthInches);
+const paperBottom = 2607;
+const initialPaperHeight = 430;
+const textBaseTop = paperBottom - initialPaperHeight + paperMargin;
+
 const FIGMA = {
   frameWidth: 4621,
   frameHeight: 2894,
   carriageRightX: 1367,
   carriageLeftX: 69,
-  maxPaperHeight: 1852,
-  initialPaperHeight: 430,
+  maxPaperHeight: paperHeight,
+  initialPaperHeight,
   lineHeight: 39,
   typeSize: 33,
-  paperBottom: 2607,
-  paperWidth: 1672,
-  textInsetX: 1002,
-  textBaseTop: 2350,
+  paperBottom,
+  paperWidth,
+  paperMargin,
+  printableWidth: paperPrintableWidth,
+  textInsetX: 836 + paperMargin,
+  textBaseTop,
   cursorX: 2369,
-  cursorY: 2350,
+  cursorY: textBaseTop,
 };
 
-const maxAdvance = FIGMA.carriageRightX - FIGMA.carriageLeftX;
+const maxAdvance = FIGMA.printableWidth;
 const maxFeed = FIGMA.maxPaperHeight - FIGMA.initialPaperHeight;
 const paperTopMargin = FIGMA.textBaseTop - (FIGMA.paperBottom - FIGMA.initialPaperHeight);
 const maxPaperBottomLift = FIGMA.paperBottom - (FIGMA.cursorY + paperTopMargin);
-const initialZoom = 1;
 const defaultZoom = 1.5;
+const initialZoom = defaultZoom;
+const exportCanvasWidth = 816;
+const exportCanvasHeight = 1056;
+const exportCanvasMargin = 96;
+const exportPdfWidth = 612;
+const exportPdfHeight = 792;
+const exportPdfMargin = 72;
 const fontSpec = `${FIGMA.typeSize}px "Special Elite", "Courier New", monospace`;
 const slugTransitionMs = 90;
 const lineAdvances: Record<LineSpacing, number> = {
@@ -67,10 +85,17 @@ const AUDIO = {
 
 type Notice = "ready" | "margin" | "page-end";
 type LineSpacing = 0 | 1 | 1.5 | 2;
+type ExportFormat = "pdf" | "png";
 type LineBreak = {
   afterLineIndex: number;
   spacing: LineSpacing;
   advance: number;
+};
+type ViewMode = "editor" | "grid";
+type SavedPage = {
+  id: string;
+  lines: string[];
+  lineBreaks: LineBreak[];
 };
 type CarriageDrag = {
   pointerId: number;
@@ -151,6 +176,111 @@ function normalizeLineBreaks(lineBreaks: LineBreak[]): LineBreak[] {
   }));
 }
 
+function hasPageContent(lines: string[]): boolean {
+  return lines.some((line) => line.trim().length > 0);
+}
+
+function createPageId(): string {
+  if ("crypto" in window && "randomUUID" in window.crypto) return window.crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getDownloadName(fileName: string, extension: ExportFormat): string {
+  const fallbackName = "typewriter-page";
+  const baseName = fileName.trim() || fallbackName;
+  const withoutKnownExtension = baseName.replace(/\.(pdf|png)$/i, "");
+  return `${withoutKnownExtension}.${extension}`;
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function sanitizePdfText(text: string): string {
+  return text
+    .replace(/[^\x20-\x7e]/g, "?")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function createPdfBlob(lines: string[], lineBreaks: LineBreak[]): Blob {
+  const lineTops = getLineTops(lineBreaks, lines.length);
+  const scale = (exportPdfWidth - exportPdfMargin * 2) / FIGMA.printableWidth;
+  const fontSize = FIGMA.typeSize * scale;
+  const textCommands = lines
+    .map((line, index) => {
+      const y = exportPdfHeight - exportPdfMargin - fontSize - (lineTops[index] ?? 0) * scale;
+      if (y < exportPdfMargin) return "";
+      return `1 0 0 1 ${exportPdfMargin.toFixed(2)} ${y.toFixed(2)} Tm (${sanitizePdfText(line)}) Tj`;
+    })
+    .filter(Boolean)
+    .join("\n");
+  const stream = `BT\n/F1 ${fontSize.toFixed(2)} Tf\n${textCommands}\nET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${exportPdfWidth} ${exportPdfHeight}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([pdf], { type: "application/pdf" });
+}
+
+async function createPngBlob(lines: string[], lineBreaks: LineBreak[]): Promise<Blob> {
+  if ("fonts" in document) await document.fonts.load(fontSpec);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = exportCanvasWidth;
+  canvas.height = exportCanvasHeight;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Could not create export canvas.");
+
+  const lineTops = getLineTops(lineBreaks, lines.length);
+  const scale = (exportCanvasWidth - exportCanvasMargin * 2) / FIGMA.printableWidth;
+  context.fillStyle = "#ede2d0";
+  context.fillRect(0, 0, exportCanvasWidth, exportCanvasHeight);
+  context.fillStyle = "#050505";
+  context.font = `${FIGMA.typeSize * scale}px "Special Elite", "Courier New", monospace`;
+  context.textBaseline = "top";
+
+  lines.forEach((line, index) => {
+    const y = exportCanvasMargin + (lineTops[index] ?? 0) * scale;
+    if (y <= exportCanvasHeight - exportCanvasMargin) {
+      context.fillText(line, exportCanvasMargin, y);
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Could not export PNG."));
+    }, "image/png");
+  });
+}
+
 function getLinePrefix(line: string, column: number): string {
   if (column <= line.length) return line.slice(0, column);
   return line.padEnd(column, " ");
@@ -189,6 +319,14 @@ function useSpecialEliteMeasure() {
 function App() {
   const [lines, setLines] = useState<string[]>([""]);
   const [lineBreaks, setLineBreaks] = useState<LineBreak[]>([]);
+  const [pages, setPages] = useState<SavedPage[]>([]);
+  const [currentPageId, setCurrentPageId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("editor");
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
+  const [exportFileName, setExportFileName] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
+  const [isStageReady, setIsStageReady] = useState(false);
   const [notice, setNotice] = useState<Notice>("ready");
   const [activeSlugId, setActiveSlugId] = useState<number | null>(null);
   const [isSlugPressed, setIsSlugPressed] = useState(false);
@@ -230,8 +368,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const zoomFrame = window.requestAnimationFrame(() => setZoom(defaultZoom));
-    return () => window.cancelAnimationFrame(zoomFrame);
+    const stageFrame = window.requestAnimationFrame(() => setIsStageReady(true));
+    return () => window.cancelAnimationFrame(stageFrame);
   }, []);
 
   useEffect(() => {
@@ -265,6 +403,8 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (viewMode !== "editor") return;
+
     const viewport = viewportRef.current;
     if (!viewport) return;
 
@@ -277,7 +417,7 @@ function App() {
     const observer = new ResizeObserver(updateScale);
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, []);
+  }, [viewMode]);
 
   useEffect(() => {
     if (notice === "ready") return;
@@ -317,6 +457,31 @@ function App() {
     next[currentLineIndexRef.current] = line;
     setDocumentLines(next);
     setDocumentCursorColumn(nextCursorColumn);
+  };
+
+  const saveCurrentPageToCache = (options: { includeEmpty?: boolean } = {}) => {
+    const { includeEmpty = false } = options;
+    const currentLines = linesRef.current;
+    if (!includeEmpty && !hasPageContent(currentLines)) return null;
+
+    const id = currentPageId ?? createPageId();
+    const pageSnapshot: SavedPage = {
+      id,
+      lines: [...currentLines],
+      lineBreaks: normalizeLineBreaks(lineBreaksRef.current).map((lineBreak) => ({ ...lineBreak })),
+    };
+
+    setPages((previousPages) => {
+      const existingIndex = previousPages.findIndex((page) => page.id === id);
+      if (existingIndex === -1) return [...previousPages, pageSnapshot];
+
+      const nextPages = [...previousPages];
+      nextPages[existingIndex] = pageSnapshot;
+      return nextPages;
+    });
+
+    setCurrentPageId(id);
+    return id;
   };
 
   const ensureLineIndexExists = (targetLineIndex: number) => {
@@ -449,6 +614,61 @@ function App() {
     marginDingedRef.current = false;
     setNotice("ready");
     inputRef.current?.focus();
+  };
+
+  const startNewPage = () => {
+    saveCurrentPageToCache();
+    setCurrentPageId(null);
+    resetDocument();
+    setViewMode("editor");
+    setIsExportOpen(false);
+  };
+
+  const openPageGrid = () => {
+    saveCurrentPageToCache({ includeEmpty: pages.length === 0 && currentPageId === null });
+    setViewMode("grid");
+    setIsExportOpen(false);
+  };
+
+  const openSavedPage = (page: SavedPage) => {
+    setCurrentPageId(page.id);
+    setDocumentLines([...page.lines]);
+    setDocumentLineBreaks(page.lineBreaks.map((lineBreak) => ({ ...lineBreak })));
+    setDocumentLineIndex(0);
+    setDocumentCursorColumn(0);
+    setDragFeed(null);
+    marginDingedRef.current = false;
+    setNotice("ready");
+    setViewMode("editor");
+    setIsExportOpen(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const openExportModal = () => {
+    saveCurrentPageToCache();
+    setIsExportOpen(true);
+  };
+
+  const closeExportModal = () => {
+    setIsExportOpen(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const exportCurrentPage = async () => {
+    setIsExporting(true);
+
+    try {
+      const currentLines = linesRef.current;
+      const currentLineBreaks = lineBreaksRef.current;
+      const blob =
+        exportFormat === "pdf"
+          ? createPdfBlob(currentLines, currentLineBreaks)
+          : await createPngBlob(currentLines, currentLineBreaks);
+      downloadBlob(blob, getDownloadName(exportFileName, exportFormat));
+      closeExportModal();
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const addReturn = () => {
@@ -659,6 +879,16 @@ function App() {
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isExportOpen) {
+      event.preventDefault();
+      return;
+    }
+
+    if (viewMode !== "editor") {
+      event.preventDefault();
+      return;
+    }
+
     if (event.repeat) {
       event.preventDefault();
       return;
@@ -717,7 +947,10 @@ function App() {
   const isRibbonActive = activeSlugId !== null && isSlugPressed;
 
   return (
-    <main className="app-shell" onPointerDown={() => inputRef.current?.focus()}>
+    <main
+      className="app-shell"
+      onPointerDown={() => viewMode === "editor" && !isExportOpen && inputRef.current?.focus()}
+    >
       <textarea
         ref={inputRef}
         className="keyboard-capture"
@@ -730,33 +963,83 @@ function App() {
         autoFocus
       />
 
-      <div className="app-toolbar">
-        <label>
-          Zoom
-          <select value={zoom} onChange={handleZoomChange}>
-            <option value={1}>50%</option>
-            <option value={1.25}>75%</option>
-            <option value={1.5}>Default</option>
-            <option value={1.75}>125%</option>
-            <option value={2}>150%</option>
-          </select>
-        </label>
-        <label>
-          Line
-          <select value={lineSpacing} onChange={handleLineSpacingChange}>
-            <option value={0}>0</option>
-            <option value={1}>1</option>
-            <option value={1.5}>1.5</option>
-            <option value={2}>2</option>
-          </select>
-        </label>
-        <button type="button" onClick={resetDocument}>
-          New page
-        </button>
-      </div>
+      <nav className="app-menu" aria-label="Typewriter menu">
+        <div className="menu-cluster">
+          <button className="glass-button icon-button" type="button" onClick={openPageGrid} aria-label="Show page grid">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 0h6v6h-6v-6Z" />
+            </svg>
+          </button>
+          <button className="glass-button text-button" type="button" onClick={startNewPage}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 3h7.6L19 7.4V21H7V3Zm7 1.8V8h3.2L14 4.8ZM9 5v14h8V10h-5V5H9Zm3 7h2v2h2v2h-2v2h-2v-2h-2v-2h2v-2Z" />
+            </svg>
+            <span>New Page</span>
+          </button>
+        </div>
 
-      <section ref={viewportRef} className="machine-viewport" aria-label="Interactive typewriter">
-        <div className="machine-stage" style={{ transform: `translateX(-50%) scale(${stageScale * zoom})` }}>
+        {viewMode === "editor" ? (
+          <div className="menu-cluster menu-controls">
+            <label>
+              <span>Zoom</span>
+              <span className="select-shell">
+                <select value={zoom} onChange={handleZoomChange} aria-label="Zoom">
+                  <option value={1}>50%</option>
+                  <option value={1.25}>75%</option>
+                  <option value={1.5}>Default</option>
+                  <option value={1.75}>125%</option>
+                  <option value={2}>150%</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5H7Z" />
+                </svg>
+              </span>
+            </label>
+            <label>
+              <span>Line</span>
+              <span className="select-shell">
+                <select value={lineSpacing} onChange={handleLineSpacingChange} aria-label="Line spacing">
+                  <option value={0}>0</option>
+                  <option value={1}>1x</option>
+                  <option value={1.5}>1.5x</option>
+                  <option value={2}>2x</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5H7Z" />
+                </svg>
+              </span>
+            </label>
+            <button className="glass-button export-menu-button" type="button" onClick={openExportModal}>
+              Export
+            </button>
+          </div>
+        ) : null}
+      </nav>
+
+      {viewMode === "grid" ? (
+        <section className="page-grid-view" aria-label="Saved pages">
+          <div className="page-grid">
+            {pages.map((page, index) => (
+              <button className="page-preview" type="button" key={page.id} onClick={() => openSavedPage(page)}>
+                <span className="page-preview-content">{page.lines.join("\n")}</span>
+                <span className="page-preview-label">Page {index + 1}</span>
+              </button>
+            ))}
+            <button className="new-page-card" type="button" onClick={startNewPage}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 3h7.6L19 7.4V21H7V3Zm7 1.8V8h3.2L14 4.8ZM9 5v14h8V10h-5V5H9Zm3 7h2v2h2v2h-2v2h-2v-2h-2v-2h2v-2Z" />
+              </svg>
+              <span>New Page</span>
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section
+          ref={viewportRef}
+          className={`machine-viewport ${isStageReady ? "is-stage-ready" : ""}`}
+          aria-label="Interactive typewriter"
+        >
+          <div className="machine-stage" style={{ transform: `translateX(-50%) scale(${stageScale * zoom})` }}>
           <div
             className={`carriage ${notice !== "ready" ? "carriage-alert" : ""} ${
               isCarriageDragging ? "is-dragging" : ""
@@ -800,7 +1083,9 @@ function App() {
               onPointerUp={finishPageDrag}
               onPointerCancel={finishPageDrag}
               style={{
+                left: FIGMA.textInsetX,
                 top: textTop,
+                width: FIGMA.printableWidth,
               }}
             >
               {lines.map((line, index) => (
@@ -864,8 +1149,58 @@ function App() {
             <img className="figma-asset typewriter-body" src={ASSETS.typewriterBody} alt="" draggable="false" />
             <div className="typing-cursor" style={{ left: FIGMA.cursorX, top: FIGMA.cursorY }} />
           </div>
+          </div>
+        </section>
+      )}
+
+      {isExportOpen ? (
+        <div className="export-overlay" onPointerDown={closeExportModal}>
+          <section
+            className="export-modal"
+            aria-label="Export"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="export-modal-header">
+              <h2>Export</h2>
+              <span className="select-shell">
+                <select
+                  value={exportFormat}
+                  onChange={(event) => setExportFormat(event.target.value as ExportFormat)}
+                  aria-label="Export format"
+                >
+                  <option value="pdf">PDF</option>
+                  <option value="png">PNG</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5H7Z" />
+                </svg>
+              </span>
+            </div>
+
+            <label className="export-field">
+              <span>File Name</span>
+              <input
+                value={exportFileName}
+                onChange={(event) => setExportFileName(event.target.value)}
+                placeholder="typewriter-page"
+              />
+            </label>
+
+            <div className="export-preview-block">
+              <span>Preview</span>
+              <div className="export-preview-frame">
+                <div className="export-paper-preview">
+                  <span>{lines.join("\n") || "\u00a0"}</span>
+                </div>
+              </div>
+            </div>
+
+            <button className="export-submit" type="button" onClick={exportCurrentPage} disabled={isExporting}>
+              {isExporting ? "Exporting..." : "Export"}
+            </button>
+          </section>
         </div>
-      </section>
+      ) : null}
     </main>
   );
 }
