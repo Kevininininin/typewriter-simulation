@@ -102,6 +102,66 @@ select {
   gap: 24px;
 }
 
+.account-cluster {
+  justify-content: flex-end;
+}
+
+.account-menu {
+  position: relative;
+}
+
+.account-button span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 12px;
+}
+
+.account-static {
+  pointer-events: none;
+}
+
+.account-popover {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  display: flex;
+  width: min(280px, calc(100vw - 36px));
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(23, 19, 55, 0.72);
+  padding: 16px;
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+
+.account-popover strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.account-label,
+.save-status {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.save-status {
+  min-width: 70px;
+}
+
+.save-status-error {
+  color: #ffb8b8;
+}
+
 .menu-controls label {
   display: flex;
   align-items: center;
@@ -430,6 +490,10 @@ select {
   backdrop-filter: blur(22px) saturate(1.2);
 }
 
+.auth-modal {
+  width: min(460px, 100%);
+}
+
 .export-modal-header {
   display: flex;
   align-items: center;
@@ -470,6 +534,96 @@ select {
 
 .export-field input::placeholder {
   color: rgba(255, 255, 255, 0.42);
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  padding: 4px;
+}
+
+.auth-tabs button {
+  min-height: 38px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.68);
+  font-weight: 700;
+}
+
+.auth-tabs button.is-active {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.oauth-button {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #171337;
+  font-weight: 800;
+  transition:
+    filter 140ms ease,
+    transform 140ms ease;
+}
+
+.oauth-button:hover,
+.oauth-button:focus-visible {
+  filter: brightness(1.04);
+}
+
+.oauth-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.oauth-button span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #4285f4;
+  font-family: Georgia, serif;
+  font-weight: 800;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.auth-message {
+  margin: -4px 0 0;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 .export-preview-frame {

@@ -2,6 +2,7 @@ import {
   ChangeEvent,
   ClipboardEvent,
   CSSProperties,
+  FormEvent,
   KeyboardEvent,
   PointerEvent,
   useEffect,
@@ -9,6 +10,8 @@ import {
   useRef,
   useState,
 } from "react";
+import type { User } from "@supabase/supabase-js";
+import { isSupabaseConfigured, supabase } from "./lib/supabase";
 
 const letterWidthInches = 8.5;
 const letterHeightInches = 11;
@@ -89,6 +92,9 @@ const AUDIO = {
 type Notice = "ready" | "margin" | "page-end";
 type LineSpacing = 0 | 1 | 1.5 | 2;
 type ExportFormat = "pdf" | "png";
+type AuthMode = "sign-in" | "register";
+type PendingAuthAction = "new-page" | "export" | null;
+type SaveStatus = "idle" | "saving" | "saved" | "error";
 type LineBreak = {
   afterLineIndex: number;
   spacing: LineSpacing;
@@ -97,6 +103,13 @@ type LineBreak = {
 type ViewMode = "editor" | "grid";
 type SavedPage = {
   id: string;
+  title?: string | null;
+  lines: string[];
+  lineBreaks: LineBreak[];
+  updatedAt?: string;
+};
+type StoredPageDocument = {
+  version: 1;
   lines: string[];
   lineBreaks: LineBreak[];
 };
@@ -186,6 +199,44 @@ function hasPageContent(lines: string[]): boolean {
 function createPageId(): string {
   if ("crypto" in window && "randomUUID" in window.crypto) return window.crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createStoredPageDocument(lines: string[], lineBreaks: LineBreak[]): StoredPageDocument {
+  return {
+    version: 1,
+    lines: [...lines],
+    lineBreaks: normalizeLineBreaks(lineBreaks).map((lineBreak) => ({ ...lineBreak })),
+  };
+}
+
+function readStoredPageDocument(document: unknown): StoredPageDocument | null {
+  if (!document || typeof document !== "object") return null;
+  const candidate = document as Partial<StoredPageDocument>;
+  if (!Array.isArray(candidate.lines) || !Array.isArray(candidate.lineBreaks)) return null;
+  if (!candidate.lines.every((line) => typeof line === "string")) return null;
+
+  return {
+    version: 1,
+    lines: candidate.lines,
+    lineBreaks: normalizeLineBreaks(
+      candidate.lineBreaks
+        .filter((lineBreak): lineBreak is LineBreak => {
+          if (!lineBreak || typeof lineBreak !== "object") return false;
+          const value = lineBreak as Partial<LineBreak>;
+          return (
+            typeof value.afterLineIndex === "number" &&
+            typeof value.advance === "number" &&
+            (value.spacing === 0 || value.spacing === 1 || value.spacing === 1.5 || value.spacing === 2)
+          );
+        })
+        .map((lineBreak) => ({ ...lineBreak })),
+    ),
+  };
+}
+
+function getInitialViewMode(): ViewMode {
+  const storedViewMode = window.localStorage.getItem("typewriter-view-mode");
+  return storedViewMode === "grid" ? "grid" : "editor";
 }
 
 function getDownloadName(fileName: string, extension: ExportFormat): string {
@@ -293,6 +344,17 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+async function ensureProfileForUser(currentUser: User, displayName?: string) {
+  if (!supabase) return;
+
+  await supabase.from("profiles").upsert({
+    id: currentUser.id,
+    email: currentUser.email,
+    updated_at: new Date().toISOString(),
+    ...(displayName !== undefined ? { display_name: displayName.trim() || null } : {}),
+  });
+}
+
 function useSpecialEliteMeasure() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [fontReady, setFontReady] = useState(false);
@@ -324,7 +386,19 @@ function App() {
   const [lineBreaks, setLineBreaks] = useState<LineBreak[]>([]);
   const [pages, setPages] = useState<SavedPage[]>([]);
   const [currentPageId, setCurrentPageId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>("editor");
+  const [viewMode, setViewMode] = useState<ViewMode>(getInitialViewMode);
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("sign-in");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authDisplayName, setAuthDisplayName] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [pendingAuthAction, setPendingAuthAction] = useState<PendingAuthAction>(null);
+  const [isAccountOpen, setIsAccountOpen] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
   const [exportFileName, setExportFileName] = useState("");
@@ -349,6 +423,7 @@ function App() {
   const carriageDragRef = useRef<CarriageDrag | null>(null);
   const pageDragRef = useRef<PageDrag | null>(null);
   const marginDingedRef = useRef(false);
+  const saveTimeoutRef = useRef<number | null>(null);
   const keyPressAudioRef = useRef<HTMLAudioElement[]>([]);
   const dingAudioRef = useRef<HTMLAudioElement | null>(null);
   const newLineAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -371,9 +446,89 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!supabase) {
+      setIsAuthLoading(false);
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
+      setIsAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+      setIsAuthLoading(false);
+      if (nextUser) window.setTimeout(() => void ensureProfileForUser(nextUser), 0);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!supabase || !user) {
+      setSaveStatus("idle");
+      return;
+    }
+
+    const supabaseClient = supabase;
+    let isCancelled = false;
+
+    const loadPages = async () => {
+      const { data, error } = await supabaseClient
+        .from("pages")
+        .select("id,title,document,updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false });
+
+      if (isCancelled) return;
+
+      if (error) {
+        setSaveStatus("error");
+        return;
+      }
+
+      const remotePages = (data ?? []).flatMap((page) => {
+        const document = readStoredPageDocument(page.document);
+        if (!document) return [];
+        return [
+          {
+            id: page.id,
+            title: page.title,
+            lines: document.lines,
+            lineBreaks: document.lineBreaks,
+            updatedAt: page.updated_at,
+          },
+        ];
+      });
+
+      setPages((previousPages) => {
+        const localPages = previousPages.filter(
+          (localPage) => !remotePages.some((remotePage) => remotePage.id === localPage.id),
+        );
+        return [...remotePages, ...localPages];
+      });
+      setSaveStatus(remotePages.length > 0 ? "saved" : "idle");
+    };
+
+    void loadPages();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [user]);
+
+  useEffect(() => {
     const stageFrame = window.requestAnimationFrame(() => setIsStageReady(true));
     return () => window.cancelAnimationFrame(stageFrame);
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("typewriter-view-mode", viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     linesRef.current = lines;
@@ -431,6 +586,7 @@ function App() {
   useEffect(() => {
     return () => {
       if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
+      if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
     };
   }, []);
 
@@ -486,6 +642,191 @@ function App() {
     setCurrentPageId(id);
     return id;
   };
+
+  const persistPage = async (page: SavedPage, currentUser = user) => {
+    if (!supabase || !currentUser || !hasPageContent(page.lines)) return;
+
+    setSaveStatus("saving");
+    const { error } = await supabase.from("pages").upsert({
+      id: page.id,
+      user_id: currentUser.id,
+      title: page.title ?? null,
+      document: createStoredPageDocument(page.lines, page.lineBreaks),
+      updated_at: new Date().toISOString(),
+    });
+
+    setSaveStatus(error ? "error" : "saved");
+  };
+
+  const saveCurrentPage = async (options: { includeEmpty?: boolean } = {}) => {
+    const id = saveCurrentPageToCache(options);
+    if (!id || !user) return id;
+
+    await persistPage({
+      id,
+      lines: [...linesRef.current],
+      lineBreaks: normalizeLineBreaks(lineBreaksRef.current).map((lineBreak) => ({ ...lineBreak })),
+    });
+
+    return id;
+  };
+
+  const openAuthModal = (mode: AuthMode = "sign-in", pendingAction: PendingAuthAction = null) => {
+    setAuthMode(mode);
+    setPendingAuthAction(pendingAction);
+    setAuthMessage(
+      isSupabaseConfigured
+        ? ""
+        : "Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your local .env file before signing in.",
+    );
+    setIsAuthOpen(true);
+    setIsAccountOpen(false);
+  };
+
+  const closeAuthModal = () => {
+    setIsAuthOpen(false);
+    setPendingAuthAction(null);
+    setAuthMessage("");
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const ensureSignedIn = (pendingAction: PendingAuthAction) => {
+    if (user) return true;
+    openAuthModal("sign-in", pendingAction);
+    return false;
+  };
+
+  const completePendingAuthAction = async (action: PendingAuthAction) => {
+    setPendingAuthAction(null);
+
+    if (action === "new-page") {
+      await startNewPage();
+      return;
+    }
+
+    if (action === "export") {
+      await openExportModal();
+    }
+  };
+
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!supabase) {
+      setAuthMessage("Supabase is not configured yet. Add your URL and anon key to .env.");
+      return;
+    }
+
+    setIsAuthSubmitting(true);
+    setAuthMessage("");
+
+    try {
+      if (authMode === "register") {
+        const { data, error } = await supabase.auth.signUp({
+          email: authEmail.trim(),
+          password: authPassword,
+          options: {
+            emailRedirectTo: window.location.origin,
+            data: {
+              display_name: authDisplayName.trim() || null,
+            },
+          },
+        });
+
+        if (error) throw error;
+
+        const registeredUser = data.user;
+        if (!data.session) {
+          setAuthMessage("Account created. Check your email to confirm your account, then sign in.");
+          setAuthMode("sign-in");
+          return;
+        }
+
+        if (registeredUser) await ensureProfileForUser(registeredUser, authDisplayName);
+        setUser(registeredUser);
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+
+        if (error) throw error;
+        await ensureProfileForUser(data.user);
+        setUser(data.user);
+      }
+
+      setAuthPassword("");
+      setIsAuthOpen(false);
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : "Authentication failed.");
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (!supabase) {
+      setAuthMessage("Supabase is not configured yet. Add your URL and anon key to .env.");
+      return;
+    }
+
+    setIsAuthSubmitting(true);
+    setAuthMessage("");
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: window.location.origin,
+      },
+    });
+
+    if (error) {
+      setAuthMessage(error.message);
+      setIsAuthSubmitting(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!supabase) return;
+    await saveCurrentPage();
+    await supabase.auth.signOut();
+    setUser(null);
+    setPages([]);
+    setCurrentPageId(null);
+    resetDocument();
+    setViewMode("editor");
+    window.localStorage.setItem("typewriter-view-mode", "editor");
+    setIsAccountOpen(false);
+    setIsAuthOpen(false);
+    setPendingAuthAction(null);
+    setSaveStatus("idle");
+  };
+
+  useEffect(() => {
+    if (!user || !hasPageContent(lines)) return;
+
+    if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = window.setTimeout(() => {
+      void saveCurrentPage();
+    }, 1000);
+
+    return () => {
+      if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+    };
+  }, [lines, lineBreaks, user]);
+
+  useEffect(() => {
+    if (!user || isAuthOpen || !pendingAuthAction) return;
+    void completePendingAuthAction(pendingAuthAction);
+  }, [user, isAuthOpen, pendingAuthAction]);
+
+  useEffect(() => {
+    if (!user || !isAuthOpen || isAuthSubmitting) return;
+    setIsAuthOpen(false);
+    setAuthPassword("");
+    setAuthMessage("");
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }, [user, isAuthOpen, isAuthSubmitting]);
 
   const ensureLineIndexExists = (targetLineIndex: number) => {
     const nextLines = [...linesRef.current];
@@ -619,16 +960,17 @@ function App() {
     inputRef.current?.focus();
   };
 
-  const startNewPage = () => {
-    saveCurrentPageToCache();
+  const startNewPage = async () => {
+    if (!ensureSignedIn("new-page")) return;
+    await saveCurrentPage();
     setCurrentPageId(null);
     resetDocument();
     setViewMode("editor");
     setIsExportOpen(false);
   };
 
-  const openPageGrid = () => {
-    saveCurrentPageToCache({ includeEmpty: pages.length === 0 && currentPageId === null });
+  const openPageGrid = async () => {
+    await saveCurrentPage({ includeEmpty: pages.length === 0 && currentPageId === null });
     setViewMode("grid");
     setIsExportOpen(false);
   };
@@ -647,8 +989,9 @@ function App() {
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  const openExportModal = () => {
-    saveCurrentPageToCache();
+  const openExportModal = async () => {
+    if (!ensureSignedIn("export")) return;
+    await saveCurrentPage();
     setIsExportOpen(true);
   };
 
@@ -661,6 +1004,7 @@ function App() {
     setIsExporting(true);
 
     try {
+      await saveCurrentPage();
       const currentLines = linesRef.current;
       const currentLineBreaks = lineBreaksRef.current;
       const blob =
@@ -1019,8 +1363,43 @@ function App() {
             <button className="glass-button export-menu-button" type="button" onClick={openExportModal}>
               Export
             </button>
+            {user ? (
+              <span className={`save-status save-status-${saveStatus}`}>
+                {saveStatus === "saving" ? "Saving..." : saveStatus === "error" ? "Save failed" : saveStatus === "saved" ? "Saved" : ""}
+              </span>
+            ) : null}
           </div>
         ) : null}
+        <div className="menu-cluster account-cluster">
+          {isAuthLoading ? (
+            <span className="glass-button text-button account-static">Checking...</span>
+          ) : user ? (
+            <div className="account-menu">
+              <button
+                className="glass-button icon-button account-button"
+                type="button"
+                onClick={() => setIsAccountOpen((isOpen) => !isOpen)}
+                aria-label="Account"
+                aria-expanded={isAccountOpen}
+              >
+                <span>{(user.email?.[0] ?? "U").toUpperCase()}</span>
+              </button>
+              {isAccountOpen ? (
+                <section className="account-popover" aria-label="Account settings">
+                  <span className="account-label">Signed in as</span>
+                  <strong>{user.email}</strong>
+                  <button className="glass-button text-button" type="button" onClick={handleSignOut}>
+                    Sign Out
+                  </button>
+                </section>
+              ) : null}
+            </div>
+          ) : (
+            <button className="glass-button text-button" type="button" onClick={() => openAuthModal("sign-in")}>
+              Sign In
+            </button>
+          )}
+        </div>
       </nav>
 
       {viewMode === "grid" ? (
@@ -1159,6 +1538,103 @@ function App() {
           </div>
         </section>
       )}
+
+      {isAuthOpen ? (
+        <div className="export-overlay" onPointerDown={closeAuthModal}>
+          <section className="export-modal auth-modal" aria-label="Sign in" onPointerDown={(event) => event.stopPropagation()}>
+            <div className="export-modal-header">
+              <h2>{authMode === "sign-in" ? "Sign In" : "Create Account"}</h2>
+              <button className="glass-button icon-button" type="button" onClick={closeAuthModal} aria-label="Close">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
+              <button
+                className={authMode === "sign-in" ? "is-active" : ""}
+                type="button"
+                onClick={() => {
+                  setAuthMode("sign-in");
+                  setAuthMessage("");
+                }}
+              >
+                Sign In
+              </button>
+              <button
+                className={authMode === "register" ? "is-active" : ""}
+                type="button"
+                onClick={() => {
+                  setAuthMode("register");
+                  setAuthMessage("");
+                }}
+              >
+                Register
+              </button>
+            </div>
+
+            <button
+              className="oauth-button"
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={isAuthSubmitting || !isSupabaseConfigured}
+            >
+              <span aria-hidden="true">G</span>
+              Continue with Google
+            </button>
+
+            <div className="auth-divider">
+              <span>or</span>
+            </div>
+
+            <form className="auth-form" onSubmit={handleAuthSubmit}>
+              {authMode === "register" ? (
+                <label className="export-field">
+                  <span>Name</span>
+                  <input
+                    value={authDisplayName}
+                    onChange={(event) => setAuthDisplayName(event.target.value)}
+                    placeholder="Optional"
+                    autoComplete="name"
+                  />
+                </label>
+              ) : null}
+
+              <label className="export-field">
+                <span>Email</span>
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  required
+                />
+              </label>
+
+              <label className="export-field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  placeholder="At least 6 characters"
+                  autoComplete={authMode === "register" ? "new-password" : "current-password"}
+                  required
+                  minLength={6}
+                />
+              </label>
+
+              {authMessage ? <p className="auth-message">{authMessage}</p> : null}
+
+              <button className="export-submit" type="submit" disabled={isAuthSubmitting || !isSupabaseConfigured}>
+                {isAuthSubmitting ? "Working..." : authMode === "sign-in" ? "Sign In" : "Create Account"}
+              </button>
+            </form>
+          </section>
+        </div>
+      ) : null}
 
       {isExportOpen ? (
         <div className="export-overlay" onPointerDown={closeExportModal}>
