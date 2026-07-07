@@ -129,8 +129,7 @@ select {
   backdrop-filter: blur(18px) saturate(1.3);
   transition:
     background 140ms ease,
-    border-color 140ms ease,
-    transform 140ms ease;
+    border-color 140ms ease;
 }
 
 .glass-button:hover,
@@ -141,7 +140,6 @@ select {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.13)),
     rgba(255, 255, 255, 0.18);
-  transform: translateY(-1px);
 }
 
 .icon-button {
@@ -163,18 +161,29 @@ select {
 }
 
 .select-shell {
+  position: relative;
   padding: 0 12px 0 16px;
 }
 
 .select-shell select {
-  min-width: max-content;
-  height: 42px;
-  color: #ffffff;
-  font-weight: 700;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
 }
 
 .select-shell select option {
   color: #171337;
+}
+
+.select-value {
+  min-width: max-content;
+  pointer-events: none;
+}
+
+.select-shell svg {
+  pointer-events: none;
 }
 
 .export-menu-button {
@@ -215,9 +224,7 @@ select {
     0 1px 1px rgba(255, 255, 255, 0.18);
   color: #050505;
   padding: 37px;
-  transition:
-    box-shadow 140ms ease,
-    transform 140ms ease;
+  transition: box-shadow 140ms ease;
 }
 
 .page-preview:hover,
@@ -225,7 +232,6 @@ select {
   box-shadow:
     inset 0 0 22px rgba(46, 33, 18, 0.04),
     0 18px 42px rgba(0, 0, 0, 0.22);
-  transform: translateY(-2px);
 }
 
 .page-preview-content {
@@ -270,15 +276,13 @@ select {
   text-align: center;
   transition:
     background 140ms ease,
-    border-color 140ms ease,
-    transform 140ms ease;
+    border-color 140ms ease;
 }
 
 .new-page-card:hover,
 .new-page-card:focus-visible {
   border-color: rgba(255, 255, 255, 0.34);
   background: rgba(255, 255, 255, 0.06);
-  transform: translateY(-2px);
 }
 
 .machine-viewport {
@@ -511,21 +515,17 @@ select {
   color: #ffffff;
   font-size: 18px;
   font-weight: 700;
-  transition:
-    filter 140ms ease,
-    transform 140ms ease;
+  transition: filter 140ms ease;
 }
 
 .export-submit:hover,
 .export-submit:focus-visible {
   filter: brightness(1.08);
-  transform: translateY(-1px);
 }
 
 .export-submit:disabled {
   cursor: wait;
   opacity: 0.72;
-  transform: none;
 }
 
 .carriage.is-page-dragging .paper,
@@ -703,10 +703,6 @@ select {
   .select-shell {
     padding-top: 8px;
     padding-bottom: 8px;
-  }
-
-  .select-shell select {
-    height: 24px;
   }
 
   .page-grid-view {

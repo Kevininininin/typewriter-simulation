@@ -18,12 +18,14 @@ const paperPrintableWidth = paperWidth - paperMargin * 2;
 const paperHeight = paperWidth * (letterHeightInches / letterWidthInches);
 const paperBottom = 2607;
 const initialPaperHeight = 430;
+const textInsetX = 836 + paperMargin;
 const textBaseTop = paperBottom - initialPaperHeight + paperMargin;
+const typePointX = 2369;
 
 const FIGMA = {
   frameWidth: 4621,
   frameHeight: 2894,
-  carriageRightX: 1367,
+  carriageRightX: typePointX - textInsetX,
   carriageLeftX: 69,
   maxPaperHeight: paperHeight,
   initialPaperHeight,
@@ -33,21 +35,22 @@ const FIGMA = {
   paperWidth,
   paperMargin,
   printableWidth: paperPrintableWidth,
-  textInsetX: 836 + paperMargin,
+  textInsetX,
   textBaseTop,
-  cursorX: 2369,
+  cursorX: typePointX,
   cursorY: textBaseTop,
 };
 
 const maxAdvance = FIGMA.printableWidth;
 const maxFeed = FIGMA.maxPaperHeight - FIGMA.initialPaperHeight;
 const paperTopMargin = FIGMA.textBaseTop - (FIGMA.paperBottom - FIGMA.initialPaperHeight);
-const maxPaperBottomLift = FIGMA.paperBottom - (FIGMA.cursorY + paperTopMargin);
+const pageEndLiftRange = paperTopMargin + FIGMA.lineHeight;
+const maxPaperBottomLift = Math.max(60, FIGMA.paperBottom - (FIGMA.cursorY + paperTopMargin));
 const defaultZoom = 1.5;
 const initialZoom = defaultZoom;
-const exportCanvasWidth = 816;
-const exportCanvasHeight = 1056;
-const exportCanvasMargin = 96;
+const exportCanvasWidth = 1632;
+const exportCanvasHeight = 2112;
+const exportCanvasMargin = 192;
 const exportPdfWidth = 612;
 const exportPdfHeight = 792;
 const exportPdfMargin = 72;
@@ -223,7 +226,7 @@ function createPdfBlob(lines: string[], lineBreaks: LineBreak[]): Blob {
     })
     .filter(Boolean)
     .join("\n");
-  const stream = `BT\n/F1 ${fontSize.toFixed(2)} Tf\n${textCommands}\nET`;
+  const stream = `0.929 0.886 0.816 rg\n0 0 ${exportPdfWidth} ${exportPdfHeight} re f\n0 0 0 rg\nBT\n/F1 ${fontSize.toFixed(2)} Tf\n${textCommands}\nET`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -359,7 +362,7 @@ function App() {
   const carriageX = FIGMA.carriageRightX - currentAdvance;
   const feed = Math.min(dragFeed ?? lineTops[currentLineIndex] ?? 0, maxFeed);
   const paperTop = FIGMA.paperBottom - (FIGMA.initialPaperHeight + feed);
-  const pageEndProgress = clamp((feed - (maxFeed - paperTopMargin)) / paperTopMargin, 0, 1);
+  const pageEndProgress = clamp((feed - (maxFeed - pageEndLiftRange)) / pageEndLiftRange, 0, 1);
   const paperBottom = FIGMA.paperBottom - maxPaperBottomLift * pageEndProgress;
   const textTop = FIGMA.textBaseTop - feed;
 
@@ -983,6 +986,9 @@ function App() {
             <label>
               <span>Zoom</span>
               <span className="select-shell">
+                <span className="select-value">
+                  {zoom === 1.5 ? "Default" : zoom === 1 ? "50%" : zoom === 1.25 ? "75%" : zoom === 1.75 ? "125%" : "150%"}
+                </span>
                 <select value={zoom} onChange={handleZoomChange} aria-label="Zoom">
                   <option value={1}>50%</option>
                   <option value={1.25}>75%</option>
@@ -998,6 +1004,7 @@ function App() {
             <label>
               <span>Line</span>
               <span className="select-shell">
+                <span className="select-value">{lineSpacing === 0 ? "0" : `${lineSpacing}x`}</span>
                 <select value={lineSpacing} onChange={handleLineSpacingChange} aria-label="Line spacing">
                   <option value={0}>0</option>
                   <option value={1}>1x</option>
@@ -1163,6 +1170,7 @@ function App() {
             <div className="export-modal-header">
               <h2>Export</h2>
               <span className="select-shell">
+                <span className="select-value">{exportFormat.toUpperCase()}</span>
                 <select
                   value={exportFormat}
                   onChange={(event) => setExportFormat(event.target.value as ExportFormat)}
