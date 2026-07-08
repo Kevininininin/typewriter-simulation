@@ -214,6 +214,20 @@ function hasPageContent(lines: string[]): boolean {
   return lines.some((line) => line.trim().length > 0);
 }
 
+function getLastContentPosition(lines: string[]): { lineIndex: number; cursorColumn: number } {
+  for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
+    const line = lines[lineIndex] ?? "";
+    if (!/\S/.test(line)) continue;
+
+    return {
+      lineIndex,
+      cursorColumn: line.trimEnd().length,
+    };
+  }
+
+  return { lineIndex: 0, cursorColumn: 0 };
+}
+
 function createPageId(): string {
   if ("crypto" in window && "randomUUID" in window.crypto) return window.crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1098,8 +1112,9 @@ function App() {
     setCurrentPageId(page.id);
     setDocumentLines([...page.lines]);
     setDocumentLineBreaks(page.lineBreaks.map((lineBreak) => ({ ...lineBreak })));
-    setDocumentLineIndex(0);
-    setDocumentCursorColumn(0);
+    const lastContentPosition = getLastContentPosition(page.lines);
+    setDocumentLineIndex(lastContentPosition.lineIndex);
+    setDocumentCursorColumn(lastContentPosition.cursorColumn);
     setDragFeed(null);
     marginDingedRef.current = false;
     setNotice("ready");
