@@ -74,6 +74,24 @@ const ASSETS = {
   colorRibbonSlugsActive: "/assets/color-ribbon-slugs-active-hidden-export.png",
   slug: "/assets/slug-center.png",
   typewriterBody: "/assets/typewriter-body.png",
+  menuHomeRounded: "/assets/menu-home-rounded.svg",
+  googleSignInMark: "/assets/google-signin-mark.png",
+};
+
+const preloadImageAsset = async (source: string) => {
+  const image = new Image();
+
+  if (typeof image.decode === "function") {
+    image.src = source;
+    await image.decode();
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error(`Unable to load image asset: ${source}`));
+    image.src = source;
+  });
 };
 
 const AUDIO = {
@@ -355,6 +373,34 @@ async function ensureProfileForUser(currentUser: User, displayName?: string) {
   });
 }
 
+function getUserDisplayName(currentUser: User): string {
+  const metadata = currentUser.user_metadata ?? {};
+  const metadataName =
+    typeof metadata.display_name === "string"
+      ? metadata.display_name
+      : typeof metadata.full_name === "string"
+        ? metadata.full_name
+        : typeof metadata.name === "string"
+          ? metadata.name
+          : "";
+
+  return metadataName.trim() || currentUser.email?.split("@")[0] || "User";
+}
+
+function getProfileInitials(displayName: string): string {
+  const words = displayName
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (words.length === 0) return "U";
+  return words
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase();
+}
+
 function useSpecialEliteMeasure() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [fontReady, setFontReady] = useState(false);
@@ -387,6 +433,10 @@ function App() {
   const [pages, setPages] = useState<SavedPage[]>([]);
   const [currentPageId, setCurrentPageId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(getInitialViewMode);
+  const [isSelectingPages, setIsSelectingPages] = useState(false);
+  const [selectedPageIds, setSelectedPageIds] = useState<Set<string>>(() => new Set());
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeletingPages, setIsDeletingPages] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
@@ -396,6 +446,7 @@ function App() {
   const [authDisplayName, setAuthDisplayName] = useState("");
   const [authMessage, setAuthMessage] = useState("");
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [isGoogleAuthSubmitting, setIsGoogleAuthSubmitting] = useState(false);
   const [pendingAuthAction, setPendingAuthAction] = useState<PendingAuthAction>(null);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
@@ -403,7 +454,8 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
   const [exportFileName, setExportFileName] = useState("");
   const [isExporting, setIsExporting] = useState(false);
-  const [isStageReady, setIsStageReady] = useState(false);
+  const [areStageAssetsReady, setAreStageAssetsReady] = useState(false);
+  const [isStageMeasured, setIsStageMeasured] = useState(false);
   const [notice, setNotice] = useState<Notice>("ready");
   const [activeSlugId, setActiveSlugId] = useState<number | null>(null);
   const [isSlugPressed, setIsSlugPressed] = useState(false);
@@ -432,6 +484,17 @@ function App() {
   const { measure } = useSpecialEliteMeasure();
 
   const lineTops = useMemo(() => getLineTops(lineBreaks, lines.length), [lineBreaks, lines.length]);
+  const userDisplayName = useMemo(() => (user ? getUserDisplayName(user) : ""), [user]);
+  const profileInitials = useMemo(() => (user ? getProfileInitials(userDisplayName) : ""), [user, userDisplayName]);
+  const orderedPages = useMemo(
+    () =>
+      [...pages].sort((firstPage, secondPage) => {
+        const firstTime = firstPage.updatedAt ? Date.parse(firstPage.updatedAt) : 0;
+        const secondTime = secondPage.updatedAt ? Date.parse(secondPage.updatedAt) : 0;
+        return secondTime - firstTime;
+      }),
+    [pages],
+  );
   const currentLine = lines[currentLineIndex] ?? "";
   const currentAdvance = Math.min(measure(getLinePrefix(currentLine, cursorColumn)), maxAdvance);
   const carriageX = FIGMA.carriageRightX - currentAdvance;
@@ -440,6 +503,8 @@ function App() {
   const pageEndProgress = clamp((feed - (maxFeed - pageEndLiftRange)) / pageEndLiftRange, 0, 1);
   const paperBottom = FIGMA.paperBottom - maxPaperBottomLift * pageEndProgress;
   const textTop = FIGMA.textBaseTop - feed;
+  const isStageReady = areStageAssetsReady && isStageMeasured;
+  const selectedPageCount = selectedPageIds.size;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -522,13 +587,40 @@ function App() {
   }, [user]);
 
   useEffect(() => {
-    const stageFrame = window.requestAnimationFrame(() => setIsStageReady(true));
-    return () => window.cancelAnimationFrame(stageFrame);
+    let isCancelled = false;
+    let stageFrame = 0;
+
+    Promise.all(Object.values(ASSETS).map(preloadImageAsset))
+      .catch(() => undefined)
+      .then(() => {
+        if (isCancelled) return;
+        stageFrame = window.requestAnimationFrame(() => setAreStageAssetsReady(true));
+      });
+
+    return () => {
+      isCancelled = true;
+      if (stageFrame) window.cancelAnimationFrame(stageFrame);
+    };
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem("typewriter-view-mode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    if (viewMode === "grid") return;
+    setIsSelectingPages(false);
+    setSelectedPageIds(new Set());
+    setIsDeleteConfirmOpen(false);
+  }, [viewMode]);
+
+  useEffect(() => {
+    setSelectedPageIds((previousIds) => {
+      const availableIds = new Set(pages.map((page) => page.id));
+      const nextIds = new Set([...previousIds].filter((pageId) => availableIds.has(pageId)));
+      return nextIds.size === previousIds.size ? previousIds : nextIds;
+    });
+  }, [pages]);
 
   useEffect(() => {
     linesRef.current = lines;
@@ -569,6 +661,7 @@ function App() {
     const updateScale = () => {
       const { width, height } = viewport.getBoundingClientRect();
       setStageScale(Math.min(width / FIGMA.frameWidth, height / FIGMA.frameHeight));
+      setIsStageMeasured(true);
     };
 
     updateScale();
@@ -624,10 +717,12 @@ function App() {
     if (!includeEmpty && !hasPageContent(currentLines)) return null;
 
     const id = currentPageId ?? createPageId();
+    const updatedAt = new Date().toISOString();
     const pageSnapshot: SavedPage = {
       id,
       lines: [...currentLines],
       lineBreaks: normalizeLineBreaks(lineBreaksRef.current).map((lineBreak) => ({ ...lineBreak })),
+      updatedAt,
     };
 
     setPages((previousPages) => {
@@ -674,6 +769,8 @@ function App() {
   const openAuthModal = (mode: AuthMode = "sign-in", pendingAction: PendingAuthAction = null) => {
     setAuthMode(mode);
     setPendingAuthAction(pendingAction);
+    setIsAuthSubmitting(false);
+    setIsGoogleAuthSubmitting(false);
     setAuthMessage(
       isSupabaseConfigured
         ? ""
@@ -687,6 +784,8 @@ function App() {
     setIsAuthOpen(false);
     setPendingAuthAction(null);
     setAuthMessage("");
+    setIsAuthSubmitting(false);
+    setIsGoogleAuthSubmitting(false);
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
@@ -770,19 +869,20 @@ function App() {
       return;
     }
 
-    setIsAuthSubmitting(true);
+    setIsGoogleAuthSubmitting(true);
     setAuthMessage("");
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: window.location.origin,
-      },
-    });
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
 
-    if (error) {
-      setAuthMessage(error.message);
-      setIsAuthSubmitting(false);
+      if (error) setAuthMessage(error.message);
+    } finally {
+      setIsGoogleAuthSubmitting(false);
     }
   };
 
@@ -975,7 +1075,26 @@ function App() {
     setIsExportOpen(false);
   };
 
+  const returnFromPageGrid = () => {
+    setViewMode("editor");
+    setIsExportOpen(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   const openSavedPage = (page: SavedPage) => {
+    if (isSelectingPages) {
+      setSelectedPageIds((previousIds) => {
+        const nextIds = new Set(previousIds);
+        if (nextIds.has(page.id)) {
+          nextIds.delete(page.id);
+        } else {
+          nextIds.add(page.id);
+        }
+        return nextIds;
+      });
+      return;
+    }
+
     setCurrentPageId(page.id);
     setDocumentLines([...page.lines]);
     setDocumentLineBreaks(page.lineBreaks.map((lineBreak) => ({ ...lineBreak })));
@@ -987,6 +1106,62 @@ function App() {
     setViewMode("editor");
     setIsExportOpen(false);
     window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const togglePageSelectionMode = () => {
+    setIsSelectingPages((isSelecting) => {
+      if (isSelecting) setSelectedPageIds(new Set());
+      return !isSelecting;
+    });
+  };
+
+  const requestDeleteSelectedPages = () => {
+    if (selectedPageIds.size === 0) return;
+    setIsDeleteConfirmOpen(true);
+  };
+
+  const closeDeleteConfirmModal = () => {
+    if (isDeletingPages) return;
+    setIsDeleteConfirmOpen(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const confirmDeleteSelectedPages = async () => {
+    const pageIdsToDelete = [...selectedPageIds];
+    if (pageIdsToDelete.length === 0) return;
+
+    const pageIdsToDeleteSet = new Set(pageIdsToDelete);
+    const previousPages = pages;
+
+    setIsDeletingPages(true);
+    setPages((currentPages) => currentPages.filter((page) => !pageIdsToDeleteSet.has(page.id)));
+    setSelectedPageIds(new Set());
+    setIsSelectingPages(false);
+    setIsDeleteConfirmOpen(false);
+
+    if (currentPageId && pageIdsToDeleteSet.has(currentPageId)) {
+      setCurrentPageId(null);
+      resetDocument();
+    }
+
+    if (!supabase || !user) {
+      setIsDeletingPages(false);
+      return;
+    }
+
+    setSaveStatus("saving");
+    const { error } = await supabase.from("pages").delete().eq("user_id", user.id).in("id", pageIdsToDelete);
+    if (error) {
+      setPages(previousPages);
+      setSelectedPageIds(pageIdsToDeleteSet);
+      setIsSelectingPages(true);
+      setSaveStatus("error");
+      setIsDeletingPages(false);
+      return;
+    }
+
+    setSaveStatus("saved");
+    setIsDeletingPages(false);
   };
 
   const openExportModal = async () => {
@@ -1226,7 +1401,7 @@ function App() {
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isExportOpen) {
+    if (isExportOpen || isDeleteConfirmOpen) {
       event.preventDefault();
       return;
     }
@@ -1312,17 +1487,25 @@ function App() {
 
       <nav className="app-menu" aria-label="Typewriter menu">
         <div className="menu-cluster">
-          <button className="glass-button icon-button" type="button" onClick={openPageGrid} aria-label="Show page grid">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 0h6v6h-6v-6Z" />
-            </svg>
+          <button
+            className="glass-button icon-button home-menu-button"
+            type="button"
+            onClick={viewMode === "grid" ? returnFromPageGrid : openPageGrid}
+            aria-label={viewMode === "grid" ? "Return to current page" : "Home"}
+          >
+            {viewMode === "grid" ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11v2H7.8l5.6 5.6L12 20 4 12l8-8 1.4 1.4L7.8 11H20Z" />
+              </svg>
+            ) : (
+              <img className="menu-home-icon" src={ASSETS.menuHomeRounded} alt="" aria-hidden="true" />
+            )}
           </button>
-          <button className="glass-button text-button" type="button" onClick={startNewPage}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 3h7.6L19 7.4V21H7V3Zm7 1.8V8h3.2L14 4.8ZM9 5v14h8V10h-5V5H9Zm3 7h2v2h2v2h-2v2h-2v-2h-2v-2h2v-2Z" />
-            </svg>
-            <span>New Page</span>
-          </button>
+          {user ? (
+            <span className={`save-status save-status-${saveStatus}`}>
+              {saveStatus === "saving" ? "Saving..." : saveStatus === "error" ? "Save failed" : saveStatus === "saved" ? "Saved" : ""}
+            </span>
+          ) : null}
         </div>
 
         {viewMode === "editor" ? (
@@ -1360,17 +1543,39 @@ function App() {
                 </svg>
               </span>
             </label>
-            <button className="glass-button export-menu-button" type="button" onClick={openExportModal}>
-              Export
-            </button>
-            {user ? (
-              <span className={`save-status save-status-${saveStatus}`}>
-                {saveStatus === "saving" ? "Saving..." : saveStatus === "error" ? "Save failed" : saveStatus === "saved" ? "Saved" : ""}
-              </span>
-            ) : null}
           </div>
         ) : null}
         <div className="menu-cluster account-cluster">
+          {viewMode === "grid" ? (
+            <div className="grid-action-cluster">
+              {isSelectingPages ? (
+                <button
+                  className="glass-button delete-pages-button"
+                  type="button"
+                  onClick={requestDeleteSelectedPages}
+                  disabled={selectedPageCount === 0}
+                >
+                  Delete {selectedPageCount > 0 ? selectedPageCount : ""}
+                </button>
+              ) : null}
+              <button
+                className={`glass-button text-button multi-select-button ${isSelectingPages ? "is-active" : ""}`}
+                type="button"
+                onClick={togglePageSelectionMode}
+                aria-pressed={isSelectingPages}
+              >
+                {isSelectingPages ? "Cancel" : "Select"}
+              </button>
+            </div>
+          ) : null}
+          {viewMode === "editor" ? (
+            <button className="glass-button export-menu-button" type="button" onClick={openExportModal}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3v10.2l3.6-3.6L17 11l-6 6-6-6 1.4-1.4 3.6 3.6V3h2Zm-7 14h2v2h10v-2h2v4H5v-4Z" />
+              </svg>
+              Export
+            </button>
+          ) : null}
           {isAuthLoading ? (
             <span className="glass-button text-button account-static">Checking...</span>
           ) : user ? (
@@ -1382,12 +1587,13 @@ function App() {
                 aria-label="Account"
                 aria-expanded={isAccountOpen}
               >
-                <span>{(user.email?.[0] ?? "U").toUpperCase()}</span>
+                <span>{profileInitials}</span>
               </button>
               {isAccountOpen ? (
                 <section className="account-popover" aria-label="Account settings">
                   <span className="account-label">Signed in as</span>
-                  <strong>{user.email}</strong>
+                  <strong>{userDisplayName}</strong>
+                  <span className="account-label">{user.email}</span>
                   <button className="glass-button text-button" type="button" onClick={handleSignOut}>
                     Sign Out
                   </button>
@@ -1405,18 +1611,36 @@ function App() {
       {viewMode === "grid" ? (
         <section className="page-grid-view" aria-label="Saved pages">
           <div className="page-grid">
-            {pages.map((page, index) => (
-              <button className="page-preview" type="button" key={page.id} onClick={() => openSavedPage(page)}>
-                <span className="page-preview-content">{page.lines.join("\n")}</span>
-                <span className="page-preview-label">Page {index + 1}</span>
-              </button>
-            ))}
             <button className="new-page-card" type="button" onClick={startNewPage}>
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M7 3h7.6L19 7.4V21H7V3Zm7 1.8V8h3.2L14 4.8ZM9 5v14h8V10h-5V5H9Zm3 7h2v2h2v2h-2v2h-2v-2h-2v-2h2v-2Z" />
               </svg>
               <span>New Page</span>
             </button>
+            {orderedPages.map((page, index) => {
+              const isSelected = selectedPageIds.has(page.id);
+
+              return (
+                <button
+                  className={`page-preview ${isSelectingPages ? "is-selecting" : ""} ${isSelected ? "is-selected" : ""}`}
+                  type="button"
+                  key={page.id}
+                  onClick={() => openSavedPage(page)}
+                  aria-pressed={isSelectingPages ? isSelected : undefined}
+                  aria-label={isSelectingPages ? `${isSelected ? "Deselect" : "Select"} page ${index + 1}` : `Open page ${index + 1}`}
+                >
+                  {isSelectingPages ? (
+                    <span className="page-selection-mark" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="m9.4 16.2-3.6-3.6L4.4 14l5 5L20 8.4 18.6 7 9.4 16.2Z" />
+                      </svg>
+                    </span>
+                  ) : null}
+                  <span className="page-preview-content">{page.lines.join("\n")}</span>
+                  <span className="page-preview-label">Page {index + 1}</span>
+                </button>
+              );
+            })}
           </div>
         </section>
       ) : (
@@ -1425,7 +1649,10 @@ function App() {
           className={`machine-viewport ${isStageReady ? "is-stage-ready" : ""}`}
           aria-label="Interactive typewriter"
         >
-          <div className="machine-stage" style={{ transform: `translateX(-50%) scale(${stageScale * zoom})` }}>
+          <div
+            className="machine-stage"
+            style={{ transform: `translateX(-50%) scale(${stageScale * zoom * (isStageReady ? 1 : 0.5)})` }}
+          >
           <div
             className={`carriage ${notice !== "ready" ? "carriage-alert" : ""} ${
               isCarriageDragging ? "is-dragging" : ""
@@ -1543,7 +1770,7 @@ function App() {
         <div className="export-overlay" onPointerDown={closeAuthModal}>
           <section className="export-modal auth-modal" aria-label="Sign in" onPointerDown={(event) => event.stopPropagation()}>
             <div className="export-modal-header">
-              <h2>{authMode === "sign-in" ? "Sign In" : "Create Account"}</h2>
+              <h2>{authMode === "sign-in" ? "Sign In" : "Sign Up"}</h2>
               <button className="glass-button icon-button" type="button" onClick={closeAuthModal} aria-label="Close">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
@@ -1570,22 +1797,8 @@ function App() {
                   setAuthMessage("");
                 }}
               >
-                Register
+                Sign Up
               </button>
-            </div>
-
-            <button
-              className="oauth-button"
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isAuthSubmitting || !isSupabaseConfigured}
-            >
-              <span aria-hidden="true">G</span>
-              Continue with Google
-            </button>
-
-            <div className="auth-divider">
-              <span>or</span>
             </div>
 
             <form className="auth-form" onSubmit={handleAuthSubmit}>
@@ -1629,9 +1842,64 @@ function App() {
               {authMessage ? <p className="auth-message">{authMessage}</p> : null}
 
               <button className="export-submit" type="submit" disabled={isAuthSubmitting || !isSupabaseConfigured}>
-                {isAuthSubmitting ? "Working..." : authMode === "sign-in" ? "Sign In" : "Create Account"}
+                {isAuthSubmitting ? "Working..." : authMode === "sign-in" ? "Sign In" : "Sign Up"}
               </button>
             </form>
+
+            <div className="auth-divider">
+              <span>or</span>
+            </div>
+
+            <button
+              className="oauth-button"
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={isGoogleAuthSubmitting || isAuthSubmitting || !isSupabaseConfigured}
+            >
+              <img className="google-signin-mark" src={ASSETS.googleSignInMark} alt="" aria-hidden="true" />
+              {isGoogleAuthSubmitting
+                ? "Opening Google..."
+                : authMode === "sign-in"
+                  ? "Sign in with Google"
+                  : "Sign up with Google"}
+            </button>
+          </section>
+        </div>
+      ) : null}
+
+      {isDeleteConfirmOpen ? (
+        <div className="export-overlay" onPointerDown={closeDeleteConfirmModal}>
+          <section
+            className="export-modal delete-confirm-modal"
+            aria-label="Confirm page deletion"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="export-modal-header">
+              <h2>Delete Pages</h2>
+              <button
+                className="glass-button icon-button"
+                type="button"
+                onClick={closeDeleteConfirmModal}
+                aria-label="Close"
+                disabled={isDeletingPages}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+                </svg>
+              </button>
+            </div>
+            <p className="delete-confirm-copy">
+              Confirming delete will permanently remove {selectedPageCount === 1 ? "this page" : "these pages"} from
+              your account and cannot be undone.
+            </p>
+            <div className="delete-confirm-actions">
+              <button className="glass-button text-button" type="button" onClick={closeDeleteConfirmModal} disabled={isDeletingPages}>
+                Cancel
+              </button>
+              <button className="glass-button text-button danger-button" type="button" onClick={confirmDeleteSelectedPages} disabled={isDeletingPages}>
+                {isDeletingPages ? "Deleting..." : "Delete Forever"}
+              </button>
+            </div>
           </section>
         </div>
       ) : null}
@@ -1645,20 +1913,11 @@ function App() {
           >
             <div className="export-modal-header">
               <h2>Export</h2>
-              <span className="select-shell">
-                <span className="select-value">{exportFormat.toUpperCase()}</span>
-                <select
-                  value={exportFormat}
-                  onChange={(event) => setExportFormat(event.target.value as ExportFormat)}
-                  aria-label="Export format"
-                >
-                  <option value="pdf">PDF</option>
-                  <option value="png">PNG</option>
-                </select>
+              <button className="glass-button icon-button" type="button" onClick={closeExportModal} aria-label="Close">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 9 5 5 5-5H7Z" />
+                  <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
                 </svg>
-              </span>
+              </button>
             </div>
 
             <label className="export-field">
@@ -1679,9 +1938,25 @@ function App() {
               </div>
             </div>
 
-            <button className="export-submit" type="button" onClick={exportCurrentPage} disabled={isExporting}>
-              {isExporting ? "Exporting..." : "Export"}
-            </button>
+            <div className="export-actions">
+              <span className="select-shell export-format-select">
+                <span className="select-value">{exportFormat.toUpperCase()}</span>
+                <select
+                  value={exportFormat}
+                  onChange={(event) => setExportFormat(event.target.value as ExportFormat)}
+                  aria-label="Export format"
+                >
+                  <option value="pdf">PDF</option>
+                  <option value="png">PNG</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5H7Z" />
+                </svg>
+              </span>
+              <button className="export-submit" type="button" onClick={exportCurrentPage} disabled={isExporting}>
+                {isExporting ? "Exporting..." : "Export"}
+              </button>
+            </div>
           </section>
         </div>
       ) : null}
