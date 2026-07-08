@@ -99,10 +99,6 @@ select {
   pointer-events: auto;
 }
 
-.menu-controls {
-  gap: 24px;
-}
-
 .account-cluster {
   justify-content: flex-end;
 }
@@ -180,12 +176,6 @@ select {
 
 .save-status-error {
   color: #ffb8b8;
-}
-
-.menu-controls label {
-  display: flex;
-  align-items: center;
-  gap: 12px;
 }
 
 .glass-button,
@@ -282,6 +272,17 @@ select {
   min-height: 48px;
   flex: 0 0 48px;
   padding: 12px;
+  border-radius: 50%;
+}
+
+.menu-help-button {
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.menu-sound-button,
+.menu-help-button {
   border-radius: 50%;
 }
 
@@ -987,6 +988,169 @@ select {
   animation: cursor-blink 1s steps(2, start) infinite;
 }
 
+.onboarding-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+
+.onboarding-card {
+  position: absolute;
+  display: flex;
+  width: min(340px, calc(100vw - 36px));
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1)),
+    rgba(23, 19, 55, 0.74);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 24px 70px rgba(0, 0, 0, 0.32);
+  color: #ffffff;
+  padding: 18px;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  transition:
+    top 360ms cubic-bezier(0.16, 1, 0.3, 1),
+    left 360ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 360ms cubic-bezier(0.16, 1, 0.3, 1);
+  backdrop-filter: blur(22px) saturate(1.22);
+}
+
+.onboarding-close-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.78);
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.onboarding-close-button:hover,
+.onboarding-close-button:focus-visible {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.onboarding-close-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.onboarding-card::after {
+  content: "";
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.onboarding-card-platen {
+  left: 32%;
+  top: 60%;
+}
+
+.onboarding-card-platen::after {
+  left: 50%;
+  bottom: -13px;
+  border-top: 14px solid rgba(61, 55, 94, 0.92);
+  border-right: 12px solid transparent;
+  border-left: 12px solid transparent;
+  margin-left: -12px;
+}
+
+.onboarding-card-page {
+  left: 54%;
+  top: 34%;
+}
+
+.onboarding-card-page::after {
+  left: 50%;
+  bottom: -13px;
+  border-top: 14px solid rgba(61, 55, 94, 0.92);
+  border-right: 12px solid transparent;
+  border-left: 12px solid transparent;
+  margin-left: -12px;
+}
+
+.onboarding-card-account {
+  left: calc(100% - 190px);
+  top: 220px;
+}
+
+.onboarding-card-account::after {
+  top: -13px;
+  right: 42px;
+  border-right: 12px solid transparent;
+  border-bottom: 14px solid rgba(61, 55, 94, 0.92);
+  border-left: 12px solid transparent;
+}
+
+.onboarding-card-typing {
+  left: 58%;
+  top: 58%;
+}
+
+.onboarding-card-typing::after {
+  left: 28px;
+  bottom: -13px;
+  border-top: 14px solid rgba(61, 55, 94, 0.92);
+  border-right: 12px solid transparent;
+  border-left: 12px solid transparent;
+}
+
+.onboarding-step-count {
+  width: max-content;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 7px 10px;
+}
+
+.onboarding-card h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.05;
+}
+
+.onboarding-card p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.onboarding-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.onboarding-actions .glass-button {
+  min-width: 104px;
+}
+
+.onboarding-primary-action {
+  border-color: rgba(255, 255, 255, 0.36);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.16)),
+    rgba(255, 255, 255, 0.2);
+}
+
 @keyframes cursor-blink {
   50% {
     opacity: 0;
@@ -1011,14 +1175,8 @@ select {
     font-size: 14px;
   }
 
-  .menu-cluster,
-  .menu-controls {
+  .menu-cluster {
     gap: 8px;
-  }
-
-  .menu-controls {
-    flex-direction: column;
-    align-items: flex-end;
   }
 
   .account-cluster {
@@ -1071,5 +1229,39 @@ select {
     gap: 24px;
     border-radius: 28px;
     padding: 24px;
+  }
+
+  .onboarding-card {
+    width: min(312px, calc(100vw - 28px));
+    gap: 10px;
+    padding: 16px;
+  }
+
+  .onboarding-card-platen,
+  .onboarding-card-page,
+  .onboarding-card-typing {
+    left: 50%;
+  }
+
+  .onboarding-card-platen {
+    top: 62%;
+  }
+
+  .onboarding-card-page {
+    top: 40%;
+  }
+
+  .onboarding-card-account {
+    left: calc(100% - 170px);
+    top: 164px;
+  }
+
+  .onboarding-card-typing {
+    top: 58%;
+  }
+
+  .onboarding-actions .glass-button {
+    min-width: 0;
+    flex: 1;
   }
 }

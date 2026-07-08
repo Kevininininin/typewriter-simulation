@@ -119,6 +119,7 @@ type LineBreak = {
   advance: number;
 };
 type ViewMode = "editor" | "grid";
+type OnboardingPlacement = "platen" | "page" | "account" | "typing";
 type SavedPage = {
   id: string;
   title?: string | null;
@@ -147,6 +148,34 @@ type SlugConfig = {
   slugHeight: number;
   angle: number;
 };
+type OnboardingStep = {
+  title: string;
+  description: string;
+  placement: OnboardingPlacement;
+};
+
+const onboardingSteps: OnboardingStep[] = [
+  {
+    title: "Move Across A Row",
+    description: "Drag the platen left or right to move your cursor within the current row, then type to edit from that spot.",
+    placement: "platen",
+  },
+  {
+    title: "Change Rows",
+    description: "Drag the page up or down to move between rows. Release it and the page snaps to the closest editable line.",
+    placement: "page",
+  },
+  {
+    title: "Save Or Export",
+    description: "Sign up or log in for free to store pages and export your work whenever you are ready.",
+    placement: "account",
+  },
+  {
+    title: "Start Typing",
+    description: "Click into the page and type. The typewriter sounds, cursor, and slugs respond as you write.",
+    placement: "typing",
+  },
+];
 
 const slugPivot = {
   x: 2365.5,
@@ -468,6 +497,9 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
   const [exportFileName, setExportFileName] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
+  const [isMuted, setIsMuted] = useState(false);
   const [areStageAssetsReady, setAreStageAssetsReady] = useState(false);
   const [isStageMeasured, setIsStageMeasured] = useState(false);
   const [notice, setNotice] = useState<Notice>("ready");
@@ -519,6 +551,10 @@ function App() {
   const textTop = FIGMA.textBaseTop - feed;
   const isStageReady = areStageAssetsReady && isStageMeasured;
   const selectedPageCount = selectedPageIds.size;
+  const activeOnboardingStep = onboardingSteps[onboardingStepIndex];
+  const shouldShowOnboarding =
+    viewMode === "editor" && isOnboardingOpen && !isAuthOpen && !isExportOpen && !isDeleteConfirmOpen;
+  const isLastOnboardingStep = onboardingStepIndex === onboardingSteps.length - 1;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -1027,7 +1063,7 @@ function App() {
   };
 
   const playAudio = (audio: HTMLAudioElement | null | undefined) => {
-    if (!audio) return;
+    if (!audio || isMuted) return;
     audio.currentTime = 0;
     void audio.play().catch(() => undefined);
   };
@@ -1180,7 +1216,6 @@ function App() {
   };
 
   const openExportModal = async () => {
-    if (!ensureSignedIn("export")) return;
     await saveCurrentPage();
     setIsExportOpen(true);
   };
@@ -1190,7 +1225,34 @@ function App() {
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
+  const openOnboarding = () => {
+    setOnboardingStepIndex(0);
+    setIsOnboardingOpen(true);
+    setIsAccountOpen(false);
+    setIsExportOpen(false);
+    setViewMode("editor");
+  };
+
+  const goToPreviousOnboardingStep = () => {
+    setOnboardingStepIndex((currentIndex) => Math.max(0, currentIndex - 1));
+  };
+
+  const goToNextOnboardingStep = () => {
+    setOnboardingStepIndex((currentIndex) => Math.min(onboardingSteps.length - 1, currentIndex + 1));
+  };
+
+  const closeOnboarding = () => {
+    setIsOnboardingOpen(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   const exportCurrentPage = async () => {
+    if (!user) {
+      setIsExportOpen(false);
+      openAuthModal("sign-in", "export");
+      return;
+    }
+
     setIsExporting(true);
 
     try {
@@ -1516,50 +1578,75 @@ function App() {
               <img className="menu-home-icon" src={ASSETS.menuHomeRounded} alt="" aria-hidden="true" />
             )}
           </button>
+          {viewMode === "editor" ? (
+            <>
+              <button
+                className="glass-button icon-button menu-sound-button"
+                type="button"
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  setIsMuted((muted) => !muted);
+                }}
+                aria-label={isMuted ? "Unmute sounds" : "Mute sounds"}
+                aria-pressed={isMuted}
+              >
+                {isMuted ? (
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 9v6h4l5 4V5L8 9H4Z" />
+                    <path d="M18.8 5.8 5.8 18.8" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.4" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 9v6h4l5 4V5L8 9H4Zm12.5 3c0-1.77-1-3.29-2.5-4.03v8.06c1.5-.74 2.5-2.26 2.5-4.03Zm-2.5-8.6v2.06c2.89.86 5 3.54 5 6.54s-2.11 5.68-5 6.54v2.06c4.01-.91 7-4.49 7-8.6s-2.99-7.69-7-8.6Z" />
+                  </svg>
+                )}
+              </button>
+              <span className="select-shell">
+                <span className="select-value">
+                  Zoom {zoom === 1.5 ? "1x" : zoom === 1 ? "0.5x" : zoom === 1.25 ? "0.75x" : zoom === 1.75 ? "1.25x" : "1.5x"}
+                </span>
+                <select value={zoom} onChange={handleZoomChange} aria-label="Zoom">
+                  <option value={1}>Zoom 0.5x</option>
+                  <option value={1.25}>Zoom 0.75x</option>
+                  <option value={1.5}>Zoom 1x</option>
+                  <option value={1.75}>Zoom 1.25x</option>
+                  <option value={2}>Zoom 1.5x</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5H7Z" />
+                </svg>
+              </span>
+              <span className="select-shell">
+                <span className="select-value">Line {lineSpacing === 0 ? "0" : `${lineSpacing}x`}</span>
+                <select value={lineSpacing} onChange={handleLineSpacingChange} aria-label="Line spacing">
+                  <option value={0}>Line 0</option>
+                  <option value={1}>Line 1x</option>
+                  <option value={1.5}>Line 1.5x</option>
+                  <option value={2}>Line 2x</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 9 5 5 5-5H7Z" />
+                </svg>
+              </span>
+              <button
+                className="glass-button icon-button menu-help-button"
+                type="button"
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  openOnboarding();
+                }}
+                aria-label="Open tutorial"
+              >
+                ?
+              </button>
+            </>
+          ) : null}
           {user ? (
             <span className={`save-status save-status-${saveStatus}`}>
               {saveStatus === "saving" ? "Saving..." : saveStatus === "error" ? "Save failed" : saveStatus === "saved" ? "Saved" : ""}
             </span>
           ) : null}
         </div>
-
-        {viewMode === "editor" ? (
-          <div className="menu-cluster menu-controls">
-            <label>
-              <span>Zoom</span>
-              <span className="select-shell">
-                <span className="select-value">
-                  {zoom === 1.5 ? "Default" : zoom === 1 ? "50%" : zoom === 1.25 ? "75%" : zoom === 1.75 ? "125%" : "150%"}
-                </span>
-                <select value={zoom} onChange={handleZoomChange} aria-label="Zoom">
-                  <option value={1}>50%</option>
-                  <option value={1.25}>75%</option>
-                  <option value={1.5}>Default</option>
-                  <option value={1.75}>125%</option>
-                  <option value={2}>150%</option>
-                </select>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 9 5 5 5-5H7Z" />
-                </svg>
-              </span>
-            </label>
-            <label>
-              <span>Line</span>
-              <span className="select-shell">
-                <span className="select-value">{lineSpacing === 0 ? "0" : `${lineSpacing}x`}</span>
-                <select value={lineSpacing} onChange={handleLineSpacingChange} aria-label="Line spacing">
-                  <option value={0}>0</option>
-                  <option value={1}>1x</option>
-                  <option value={1.5}>1.5x</option>
-                  <option value={2}>2x</option>
-                </select>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 9 5 5 5-5H7Z" />
-                </svg>
-              </span>
-            </label>
-          </div>
-        ) : null}
         <div className="menu-cluster account-cluster">
           {viewMode === "grid" ? (
             <div className="grid-action-cluster">
@@ -1787,6 +1874,46 @@ function App() {
           </div>
         </section>
       )}
+
+      {shouldShowOnboarding && activeOnboardingStep ? (
+        <div className="onboarding-layer" aria-live="polite">
+          <section
+            className={`onboarding-card onboarding-card-${activeOnboardingStep.placement}`}
+            aria-label="Getting started"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button className="onboarding-close-button" type="button" onClick={closeOnboarding} aria-label="Close tutorial">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+              </svg>
+            </button>
+            <span className="onboarding-step-count">
+              {onboardingStepIndex + 1} / {onboardingSteps.length}
+            </span>
+            <h2>{activeOnboardingStep.title}</h2>
+            <p>{activeOnboardingStep.description}</p>
+            <div className="onboarding-actions">
+              <button
+                className="glass-button text-button"
+                type="button"
+                onClick={goToPreviousOnboardingStep}
+                disabled={onboardingStepIndex === 0}
+              >
+                Previous
+              </button>
+              {isLastOnboardingStep ? (
+                <button className="glass-button text-button onboarding-primary-action" type="button" onClick={closeOnboarding}>
+                  Close
+                </button>
+              ) : (
+                <button className="glass-button text-button onboarding-primary-action" type="button" onClick={goToNextOnboardingStep}>
+                  Next
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {isAuthOpen ? (
         <div className="export-overlay auth-overlay" onPointerDown={closeAuthModal}>
