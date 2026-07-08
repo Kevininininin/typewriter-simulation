@@ -119,8 +119,11 @@ select {
 
 .account-button span {
   display: grid;
-  width: 35px;
-  height: 35px;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  aspect-ratio: 1;
   place-items: center;
   border-radius: 50%;
   background: linear-gradient(133deg, #9b9b9b 10.688%, #353535 89.364%);
@@ -254,6 +257,22 @@ select {
 .icon-button {
   width: 44px;
   padding: 12px;
+}
+
+.app-menu .glass-button,
+.app-menu .select-shell {
+  height: 48px;
+  min-height: 48px;
+}
+
+.app-menu .icon-button {
+  width: 48px;
+  min-width: 48px;
+  flex: 0 0 48px;
+}
+
+.app-menu .account-button {
+  padding: 6px;
 }
 
 .home-menu-button {
@@ -580,6 +599,10 @@ select {
   padding: 24px;
 }
 
+.auth-overlay {
+  background: rgba(0, 0, 0, 0.62);
+}
+
 .export-modal {
   display: flex;
   width: min(554px, 100%);
@@ -698,9 +721,10 @@ select {
 
 .google-signin-mark {
   display: block;
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  margin-right: 12px;
   object-fit: contain;
 }
 

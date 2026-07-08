@@ -75,7 +75,7 @@ const ASSETS = {
   slug: "/assets/slug-center.png",
   typewriterBody: "/assets/typewriter-body.png",
   menuHomeRounded: "/assets/menu-home-rounded.svg",
-  googleSignInMark: "/assets/google-signin-mark.png",
+  googleSignInMark: "/assets/google-signin-mark.svg",
 };
 
 const preloadImageAsset = async (source: string) => {
@@ -1601,8 +1601,15 @@ function App() {
               ) : null}
             </div>
           ) : (
-            <button className="glass-button text-button" type="button" onClick={() => openAuthModal("sign-in")}>
-              Sign In
+            <button
+              className="glass-button icon-button signed-out-account-button"
+              type="button"
+              onClick={() => openAuthModal("sign-in")}
+              aria-label="Sign in"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 12.5c2.49 0 4.5-2.01 4.5-4.5S14.49 3.5 12 3.5 7.5 5.51 7.5 8s2.01 4.5 4.5 4.5Zm0 2c-3 0-7 1.5-7 4.45V21h14v-2.05c0-2.95-4-4.45-7-4.45Z" />
+              </svg>
             </button>
           )}
         </div>
@@ -1767,7 +1774,7 @@ function App() {
       )}
 
       {isAuthOpen ? (
-        <div className="export-overlay" onPointerDown={closeAuthModal}>
+        <div className="export-overlay auth-overlay" onPointerDown={closeAuthModal}>
           <section className="export-modal auth-modal" aria-label="Sign in" onPointerDown={(event) => event.stopPropagation()}>
             <div className="export-modal-header">
               <h2>{authMode === "sign-in" ? "Sign In" : "Sign Up"}</h2>
