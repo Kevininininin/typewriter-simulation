@@ -51,6 +51,7 @@ const pageEndLiftRange = paperTopMargin + FIGMA.lineHeight;
 const maxPaperBottomLift = Math.max(60, FIGMA.paperBottom - (FIGMA.cursorY + paperTopMargin));
 const defaultZoom = 1.5;
 const initialZoom = defaultZoom;
+const backgroundStorageBucket = "background-images";
 const exportCanvasWidth = 1632;
 const exportCanvasHeight = 2112;
 const exportCanvasMargin = 192;
@@ -74,9 +75,37 @@ const ASSETS = {
   colorRibbonSlugsActive: "/assets/color-ribbon-slugs-active-hidden-export.png",
   slug: "/assets/slug-center.png",
   typewriterBody: "/assets/typewriter-body.png",
+  typewriterTemplate: "/assets/typewriter-template.png",
+  backgroundPathway: "/assets/background-pathway.jpg",
+  backgroundShadow: "/assets/background-shadow.jpg",
   menuHomeRounded: "/assets/menu-home-rounded.svg",
   googleSignInMark: "/assets/google-signin-mark.svg",
 };
+
+const defaultBackgroundImages: BackgroundImageOption[] = [
+  {
+    id: "default-pathway",
+    name: "Pathway",
+    url: ASSETS.backgroundPathway,
+  },
+  {
+    id: "default-shadow",
+    name: "Shadow",
+    url: ASSETS.backgroundShadow,
+  },
+];
+
+const defaultBackgroundSettings: BackgroundSettings = {
+  mode: "mono",
+  monoColor: "#171337",
+  gradientColor1: "#171337",
+  gradientColor2: "#42369d",
+  gradientAngle: 90,
+  selectedImageId: null,
+  uploadedImages: [],
+};
+
+const monoSwatches = ["#ffffff", "#5f3a0d", "#154e34", "#171337", "#4a0c3c", "#000000"];
 
 const preloadImageAsset = async (source: string) => {
   const image = new Image();
@@ -113,10 +142,29 @@ type ExportFormat = "pdf" | "png";
 type AuthMode = "sign-in" | "register";
 type PendingAuthAction = "new-page" | "export" | null;
 type SaveStatus = "idle" | "saving" | "saved" | "error";
+type SaveStatusSource = "page" | "background" | null;
+type BackgroundMode = "mono" | "gradient" | "image";
+type ColorPickerTarget = "mono" | "gradient-1" | "gradient-2" | null;
 type LineBreak = {
   afterLineIndex: number;
   spacing: LineSpacing;
   advance: number;
+};
+type BackgroundImageOption = {
+  id: string;
+  name: string;
+  url: string;
+  path?: string;
+  isUserUpload?: boolean;
+};
+type BackgroundSettings = {
+  mode: BackgroundMode;
+  monoColor: string;
+  gradientColor1: string;
+  gradientColor2: string;
+  gradientAngle: number;
+  selectedImageId: string | null;
+  uploadedImages: BackgroundImageOption[];
 };
 type ViewMode = "editor" | "grid";
 type OnboardingPlacement = "platen" | "page" | "account" | "typing";
@@ -125,12 +173,17 @@ type SavedPage = {
   title?: string | null;
   lines: string[];
   lineBreaks: LineBreak[];
+  createdAt?: string;
   updatedAt?: string;
 };
 type StoredPageDocument = {
   version: 1;
   lines: string[];
   lineBreaks: LineBreak[];
+};
+type StoredBackgroundSettings = Omit<BackgroundSettings, "uploadedImages"> & {
+  version: 1;
+  uploadedImages: Array<Pick<BackgroundImageOption, "id" | "name" | "path" | "isUserUpload">>;
 };
 type CarriageDrag = {
   pointerId: number;
@@ -267,6 +320,181 @@ function createStoredPageDocument(lines: string[], lineBreaks: LineBreak[]): Sto
     version: 1,
     lines: [...lines],
     lineBreaks: normalizeLineBreaks(lineBreaks).map((lineBreak) => ({ ...lineBreak })),
+  };
+}
+
+function normalizeHexColor(value: unknown, fallback = "#171337"): string {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim().replace(/^#/, "");
+  if (!/^[0-9a-f]{6}$/i.test(trimmed)) return fallback;
+  return `#${trimmed.toLowerCase()}`;
+}
+
+function getHexLabel(color: string): string {
+  return normalizeHexColor(color).replace("#", "").toUpperCase();
+}
+
+function hexToRgb(color: string) {
+  const normalized = normalizeHexColor(color);
+  const value = Number.parseInt(normalized.slice(1), 16);
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return `#${[r, g, b].map((channel) => clamp(Math.round(channel), 0, 255).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function hexToHsv(color: string) {
+  const { r, g, b } = hexToRgb(color);
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let hue = 0;
+
+  if (delta !== 0) {
+    if (max === red) hue = 60 * (((green - blue) / delta) % 6);
+    else if (max === green) hue = 60 * ((blue - red) / delta + 2);
+    else hue = 60 * ((red - green) / delta + 4);
+  }
+
+  return {
+    h: hue < 0 ? hue + 360 : hue,
+    s: max === 0 ? 0 : delta / max,
+    v: max,
+  };
+}
+
+function hsvToHex(hue: number, saturation: number, value: number): string {
+  const chroma = value * saturation;
+  const x = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const match = value - chroma;
+  const [r1, g1, b1] =
+    hue < 60
+      ? [chroma, x, 0]
+      : hue < 120
+        ? [x, chroma, 0]
+        : hue < 180
+          ? [0, chroma, x]
+          : hue < 240
+            ? [0, x, chroma]
+            : hue < 300
+              ? [x, 0, chroma]
+              : [chroma, 0, x];
+
+  return rgbToHex((r1 + match) * 255, (g1 + match) * 255, (b1 + match) * 255);
+}
+
+function getBackgroundCss(settings: BackgroundSettings): string {
+  if (settings.mode === "gradient") {
+    return `linear-gradient(${settings.gradientAngle}deg, ${settings.gradientColor1}, ${settings.gradientColor2})`;
+  }
+
+  if (settings.mode === "image") {
+    const selectedImage = getAvailableBackgroundImages(settings).find((image) => image.id === settings.selectedImageId);
+    if (selectedImage?.url) return `url("${selectedImage.url}") center / cover no-repeat`;
+  }
+
+  return settings.monoColor;
+}
+
+function getAvailableBackgroundImages(settings: BackgroundSettings): BackgroundImageOption[] {
+  return [...defaultBackgroundImages, ...settings.uploadedImages];
+}
+
+function createStoredBackgroundSettings(settings: BackgroundSettings): StoredBackgroundSettings {
+  return {
+    version: 1,
+    mode: settings.mode,
+    monoColor: normalizeHexColor(settings.monoColor),
+    gradientColor1: normalizeHexColor(settings.gradientColor1),
+    gradientColor2: normalizeHexColor(settings.gradientColor2, "#42369d"),
+    gradientAngle: clamp(settings.gradientAngle, 0, 360),
+    selectedImageId: settings.selectedImageId,
+    uploadedImages: settings.uploadedImages
+      .filter((image) => image.isUserUpload && image.path)
+      .slice(0, 2)
+      .map((image) => ({
+        id: image.id,
+        name: image.name,
+        path: image.path,
+        isUserUpload: true,
+      })),
+  };
+}
+
+function areStoredBackgroundSettingsEqual(first: StoredBackgroundSettings, second: StoredBackgroundSettings): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
+function createBackgroundSettingsFromStored(
+  storedSettings: StoredBackgroundSettings,
+  uploadedImages: BackgroundImageOption[],
+): BackgroundSettings {
+  const restoredUploads = storedSettings.uploadedImages.flatMap((storedImage) => {
+    const matchingImage = uploadedImages.find(
+      (image) => image.path === storedImage.path || image.id === storedImage.id,
+    );
+    if (!matchingImage?.url) return [];
+
+    return [
+      {
+        id: storedImage.id,
+        name: storedImage.name,
+        path: storedImage.path,
+        url: matchingImage.url,
+        isUserUpload: true,
+      },
+    ];
+  });
+  const selectedImagePool = getAvailableBackgroundImages({
+    ...defaultBackgroundSettings,
+    ...storedSettings,
+    uploadedImages: restoredUploads,
+  });
+  const selectedImageId = selectedImagePool.some((image) => image.id === storedSettings.selectedImageId)
+    ? storedSettings.selectedImageId
+    : null;
+
+  return {
+    ...defaultBackgroundSettings,
+    ...storedSettings,
+    uploadedImages: restoredUploads,
+    selectedImageId,
+    mode: storedSettings.mode === "image" && !selectedImageId ? "mono" : storedSettings.mode,
+  };
+}
+
+function readStoredBackgroundSettings(settings: unknown): StoredBackgroundSettings | null {
+  if (!settings || typeof settings !== "object") return null;
+  const candidate = settings as Partial<StoredBackgroundSettings>;
+  const mode: BackgroundMode =
+    candidate.mode === "gradient" || candidate.mode === "image" || candidate.mode === "mono" ? candidate.mode : "mono";
+  const uploadedImages = Array.isArray(candidate.uploadedImages)
+    ? candidate.uploadedImages
+        .filter((image): image is Pick<BackgroundImageOption, "id" | "name" | "path" | "isUserUpload"> => {
+          if (!image || typeof image !== "object") return false;
+          const value = image as Partial<BackgroundImageOption>;
+          return typeof value.id === "string" && typeof value.name === "string" && typeof value.path === "string";
+        })
+        .slice(0, 2)
+    : [];
+
+  return {
+    version: 1,
+    mode,
+    monoColor: normalizeHexColor(candidate.monoColor),
+    gradientColor1: normalizeHexColor(candidate.gradientColor1),
+    gradientColor2: normalizeHexColor(candidate.gradientColor2, "#42369d"),
+    gradientAngle: typeof candidate.gradientAngle === "number" ? clamp(candidate.gradientAngle, 0, 360) : 90,
+    selectedImageId: typeof candidate.selectedImageId === "string" ? candidate.selectedImageId : null,
+    uploadedImages,
   };
 }
 
@@ -493,10 +721,21 @@ function App() {
   const [pendingAuthAction, setPendingAuthAction] = useState<PendingAuthAction>(null);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [saveStatusSource, setSaveStatusSource] = useState<SaveStatusSource>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
   const [exportFileName, setExportFileName] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isBackgroundOpen, setIsBackgroundOpen] = useState(false);
+  const [backgroundTab, setBackgroundTab] = useState<BackgroundMode>("mono");
+  const [backgroundSettings, setBackgroundSettings] = useState<BackgroundSettings>(defaultBackgroundSettings);
+  const [draftBackgroundSettings, setDraftBackgroundSettings] =
+    useState<BackgroundSettings>(defaultBackgroundSettings);
+  const [colorPickerTarget, setColorPickerTarget] = useState<ColorPickerTarget>(null);
+  const [isUploadingBackground, setIsUploadingBackground] = useState(false);
+  const [isSavingBackground, setIsSavingBackground] = useState(false);
+  const [backgroundMessage, setBackgroundMessage] = useState("");
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
@@ -531,6 +770,7 @@ function App() {
   const newLineAudioRef = useRef<HTMLAudioElement | null>(null);
   const viewportRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const backgroundUploadInputRef = useRef<HTMLInputElement>(null);
   const { measure } = useSpecialEliteMeasure();
 
   const lineTops = useMemo(() => getLineTops(lineBreaks, lines.length), [lineBreaks, lines.length]);
@@ -545,6 +785,15 @@ function App() {
       }),
     [pages],
   );
+  const pageNumbersById = useMemo(() => {
+    const orderedByCreation = [...pages].sort((firstPage, secondPage) => {
+      const firstTime = Date.parse(firstPage.createdAt ?? firstPage.updatedAt ?? "");
+      const secondTime = Date.parse(secondPage.createdAt ?? secondPage.updatedAt ?? "");
+      return (Number.isNaN(firstTime) ? 0 : firstTime) - (Number.isNaN(secondTime) ? 0 : secondTime);
+    });
+
+    return new Map(orderedByCreation.map((page, index) => [page.id, index + 1]));
+  }, [pages]);
   const currentLine = lines[currentLineIndex] ?? "";
   const currentAdvance = Math.min(measure(getLinePrefix(currentLine, cursorColumn)), maxAdvance);
   const carriageX = FIGMA.carriageRightX - currentAdvance;
@@ -557,8 +806,60 @@ function App() {
   const selectedPageCount = selectedPageIds.size;
   const activeOnboardingStep = onboardingSteps[onboardingStepIndex];
   const shouldShowOnboarding =
-    viewMode === "editor" && isOnboardingOpen && !isAuthOpen && !isExportOpen && !isDeleteConfirmOpen;
+    viewMode === "editor" &&
+    isOnboardingOpen &&
+    !isAuthOpen &&
+    !isExportOpen &&
+    !isDeleteConfirmOpen &&
+    !isSettingsOpen &&
+    !isBackgroundOpen;
   const isLastOnboardingStep = onboardingStepIndex === onboardingSteps.length - 1;
+  const backgroundCss = getBackgroundCss(backgroundSettings);
+  const draftBackgroundCss = getBackgroundCss(draftBackgroundSettings);
+  const availableDraftBackgroundImages = getAvailableBackgroundImages(draftBackgroundSettings);
+  const selectedBackgroundImage = availableDraftBackgroundImages.find(
+    (image) => image.id === draftBackgroundSettings.selectedImageId,
+  );
+  const hasBackgroundSettingsChanges = useMemo(
+    () =>
+      JSON.stringify(createStoredBackgroundSettings(draftBackgroundSettings)) !==
+      JSON.stringify(createStoredBackgroundSettings(backgroundSettings)),
+    [backgroundSettings, draftBackgroundSettings],
+  );
+  const activePickerColor =
+    colorPickerTarget === "mono"
+      ? draftBackgroundSettings.monoColor
+      : colorPickerTarget === "gradient-1"
+        ? draftBackgroundSettings.gradientColor1
+        : colorPickerTarget === "gradient-2"
+          ? draftBackgroundSettings.gradientColor2
+          : "#171337";
+  const activePickerHsv = hexToHsv(activePickerColor);
+
+  const updatePageSaveStatus = (status: SaveStatus) => {
+    setSaveStatusSource(status === "idle" ? null : "page");
+    setSaveStatus(status);
+  };
+
+  const updateBackgroundSaveStatus = (status: SaveStatus) => {
+    setSaveStatusSource(status === "idle" ? null : "background");
+    setSaveStatus(status);
+  };
+
+  const saveStatusLabel =
+    saveStatus === "saving"
+      ? saveStatusSource === "background"
+        ? "Saving background..."
+        : "Saving..."
+      : saveStatus === "error"
+        ? saveStatusSource === "background"
+          ? "Background save failed"
+          : "Save failed"
+        : saveStatus === "saved"
+          ? saveStatusSource === "background"
+            ? "Background saved"
+            : "Saved"
+          : "";
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -589,7 +890,7 @@ function App() {
 
   useEffect(() => {
     if (!supabase || !user) {
-      setSaveStatus("idle");
+      updatePageSaveStatus("idle");
       return;
     }
 
@@ -599,14 +900,14 @@ function App() {
     const loadPages = async () => {
       const { data, error } = await supabaseClient
         .from("pages")
-        .select("id,title,document,updated_at")
+        .select("id,title,document,created_at,updated_at")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
 
       if (isCancelled) return;
 
       if (error) {
-        setSaveStatus("error");
+        updatePageSaveStatus("error");
         return;
       }
 
@@ -619,6 +920,7 @@ function App() {
             title: page.title,
             lines: document.lines,
             lineBreaks: document.lineBreaks,
+            createdAt: page.created_at,
             updatedAt: page.updated_at,
           },
         ];
@@ -630,7 +932,7 @@ function App() {
         );
         return [...remotePages, ...localPages];
       });
-      setSaveStatus(remotePages.length > 0 ? "saved" : "idle");
+      updatePageSaveStatus(remotePages.length > 0 ? "saved" : "idle");
     };
 
     void loadPages();
@@ -660,6 +962,97 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem("typewriter-view-mode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    if (user) return;
+    const storedValue = window.localStorage.getItem("typewriter-background-settings");
+    let storedSettings: StoredBackgroundSettings | null = null;
+
+    try {
+      storedSettings = storedValue ? readStoredBackgroundSettings(JSON.parse(storedValue)) : null;
+    } catch {
+      storedSettings = null;
+    }
+
+    if (!storedSettings) return;
+    const selectedImageId = defaultBackgroundImages.some((image) => image.id === storedSettings.selectedImageId)
+      ? storedSettings.selectedImageId
+      : null;
+    const nextSettings = {
+      ...defaultBackgroundSettings,
+      ...storedSettings,
+      uploadedImages: [],
+      selectedImageId,
+      mode: storedSettings.mode === "image" && !selectedImageId ? "mono" : storedSettings.mode,
+    };
+    setBackgroundSettings(nextSettings);
+    setDraftBackgroundSettings(nextSettings);
+  }, [user]);
+
+  useEffect(() => {
+    if (!supabase || !user) return;
+
+    const supabaseClient = supabase;
+    let isCancelled = false;
+
+    const loadBackgroundSettings = async () => {
+      const { data, error } = await supabaseClient
+        .from("profiles")
+        .select("background_settings")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (isCancelled || error) return;
+      const storedSettings = readStoredBackgroundSettings(data?.background_settings);
+      if (!storedSettings) return;
+
+      const uploadedImages = await Promise.all(
+        storedSettings.uploadedImages.map(async (image) => {
+          if (!image.path) return null;
+          const { data: signedUrlData, error: signedUrlError } = await supabaseClient.storage
+            .from(backgroundStorageBucket)
+            .createSignedUrl(image.path, 60 * 60);
+
+          if (signedUrlError || !signedUrlData?.signedUrl) return null;
+          return {
+            id: image.id,
+            name: image.name,
+            path: image.path,
+            isUserUpload: true,
+            url: signedUrlData.signedUrl,
+          } satisfies BackgroundImageOption;
+        }),
+      );
+
+      if (isCancelled) return;
+      const availableImages = uploadedImages.filter(
+        (image): image is Exclude<(typeof uploadedImages)[number], null> => image !== null,
+      );
+      const selectedImagePool = getAvailableBackgroundImages({
+        ...defaultBackgroundSettings,
+        ...storedSettings,
+        uploadedImages: availableImages,
+      });
+      const selectedImageId = selectedImagePool.some((image) => image.id === storedSettings.selectedImageId)
+        ? storedSettings.selectedImageId
+        : null;
+      const nextSettings = {
+        ...defaultBackgroundSettings,
+        ...storedSettings,
+        uploadedImages: availableImages,
+        selectedImageId,
+        mode: storedSettings.mode === "image" && !selectedImageId ? "mono" : storedSettings.mode,
+      };
+      setBackgroundSettings(nextSettings);
+      setDraftBackgroundSettings(nextSettings);
+    };
+
+    void loadBackgroundSettings();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [user]);
 
   useEffect(() => {
     if (viewMode === "grid") return;
@@ -781,10 +1174,12 @@ function App() {
 
     const id = currentPageId ?? createPageId();
     const updatedAt = new Date().toISOString();
+    const existingPage = pages.find((page) => page.id === id);
     const pageSnapshot: SavedPage = {
       id,
       lines: [...currentLines],
       lineBreaks: normalizeLineBreaks(lineBreaksRef.current).map((lineBreak) => ({ ...lineBreak })),
+      createdAt: existingPage?.createdAt ?? updatedAt,
       updatedAt,
     };
 
@@ -804,7 +1199,7 @@ function App() {
   const persistPage = async (page: SavedPage, currentUser = user) => {
     if (!supabase || !currentUser || !hasPageContent(page.lines)) return;
 
-    setSaveStatus("saving");
+    updatePageSaveStatus("saving");
     const { error } = await supabase.from("pages").upsert({
       id: page.id,
       user_id: currentUser.id,
@@ -813,7 +1208,7 @@ function App() {
       updated_at: new Date().toISOString(),
     });
 
-    setSaveStatus(error ? "error" : "saved");
+    updatePageSaveStatus(error ? "error" : "saved");
   };
 
   const saveCurrentPage = async (options: { includeEmpty?: boolean } = {}) => {
@@ -962,7 +1357,7 @@ function App() {
     setIsAccountOpen(false);
     setIsAuthOpen(false);
     setPendingAuthAction(null);
-    setSaveStatus("idle");
+    updatePageSaveStatus("idle");
   };
 
   useEffect(() => {
@@ -1213,18 +1608,18 @@ function App() {
       return;
     }
 
-    setSaveStatus("saving");
+    updatePageSaveStatus("saving");
     const { error } = await supabase.from("pages").delete().eq("user_id", user.id).in("id", pageIdsToDelete);
     if (error) {
       setPages(previousPages);
       setSelectedPageIds(pageIdsToDeleteSet);
       setIsSelectingPages(true);
-      setSaveStatus("error");
+      updatePageSaveStatus("error");
       setIsDeletingPages(false);
       return;
     }
 
-    setSaveStatus("saved");
+    updatePageSaveStatus("saved");
     setIsDeletingPages(false);
   };
 
@@ -1235,6 +1630,236 @@ function App() {
 
   const closeExportModal = () => {
     setIsExportOpen(false);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const openSettingsModal = () => {
+    setIsSettingsOpen(true);
+    setIsBackgroundOpen(false);
+    setIsAccountOpen(false);
+    setIsExportOpen(false);
+    setIsOnboardingOpen(false);
+  };
+
+  const closeSettingsModal = () => {
+    setIsSettingsOpen(false);
+    setColorPickerTarget(null);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const openBackgroundModal = () => {
+    setBackgroundTab(backgroundSettings.mode);
+    setDraftBackgroundSettings(backgroundSettings);
+    setIsBackgroundOpen(true);
+    setIsSettingsOpen(false);
+    setColorPickerTarget(null);
+    setBackgroundMessage("");
+  };
+
+  const closeBackgroundModal = () => {
+    setIsBackgroundOpen(false);
+    setDraftBackgroundSettings(backgroundSettings);
+    setColorPickerTarget(null);
+    setBackgroundMessage("");
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const returnToSettingsFromBackground = () => {
+    setIsBackgroundOpen(false);
+    setIsSettingsOpen(true);
+    setDraftBackgroundSettings(backgroundSettings);
+    setColorPickerTarget(null);
+    setBackgroundMessage("");
+  };
+
+  const updateBackgroundColor = (target: ColorPickerTarget, color: string) => {
+    const normalizedColor = normalizeHexColor(color);
+    setDraftBackgroundSettings((currentSettings) => {
+      if (target === "mono") return { ...currentSettings, monoColor: normalizedColor, mode: "mono" };
+      if (target === "gradient-1") return { ...currentSettings, gradientColor1: normalizedColor, mode: "gradient" };
+      if (target === "gradient-2") return { ...currentSettings, gradientColor2: normalizedColor, mode: "gradient" };
+      return currentSettings;
+    });
+  };
+
+  const updateColorFromPickerPointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (!colorPickerTarget) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const saturation = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const value = clamp(1 - (event.clientY - rect.top) / rect.height, 0, 1);
+    updateBackgroundColor(colorPickerTarget, hsvToHex(activePickerHsv.h, saturation, value));
+  };
+
+  const startColorPickerDrag = (event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateColorFromPickerPointer(event);
+  };
+
+  const updateColorPickerDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    updateColorFromPickerPointer(event);
+  };
+
+  const updateColorHue = (event: PointerEvent<HTMLDivElement>) => {
+    if (!colorPickerTarget) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const hue = clamp((event.clientX - rect.left) / rect.width, 0, 1) * 360;
+    updateBackgroundColor(colorPickerTarget, hsvToHex(hue, activePickerHsv.s, activePickerHsv.v));
+  };
+
+  const startHueDrag = (event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateColorHue(event);
+  };
+
+  const updateHueDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    updateColorHue(event);
+  };
+
+  const uploadBackgroundImage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setBackgroundMessage("Choose a PNG or JPG image.");
+      return;
+    }
+
+    if (!user || !supabase) {
+      setBackgroundMessage("Sign in to store uploaded background images.");
+      return;
+    }
+
+    const existingUploads = draftBackgroundSettings.uploadedImages.filter((image) => image.isUserUpload);
+    if (existingUploads.length >= 2) {
+      setBackgroundMessage("You can store up to two uploaded images.");
+      return;
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "png";
+    const id = createPageId();
+    const path = `${user.id}/${id}.${extension}`;
+
+    setIsUploadingBackground(true);
+    setBackgroundMessage("");
+
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from(backgroundStorageBucket)
+        .upload(path, file, { cacheControl: "3600", upsert: false });
+      if (uploadError) throw uploadError;
+
+      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+        .from(backgroundStorageBucket)
+        .createSignedUrl(path, 60 * 60);
+      if (signedUrlError || !signedUrlData?.signedUrl) throw signedUrlError ?? new Error("Could not load uploaded image.");
+
+      const imageOption: BackgroundImageOption = {
+        id,
+        name: file.name,
+        path,
+        url: signedUrlData.signedUrl,
+        isUserUpload: true,
+      };
+
+      setDraftBackgroundSettings((currentSettings) => ({
+        ...currentSettings,
+        mode: "image",
+        selectedImageId: id,
+        uploadedImages: [...currentSettings.uploadedImages.filter((image) => image.isUserUpload).slice(0, 1), imageOption],
+      }));
+      setBackgroundTab("image");
+    } catch (error) {
+      setBackgroundMessage(error instanceof Error ? error.message : "Image upload failed.");
+    } finally {
+      setIsUploadingBackground(false);
+    }
+  };
+
+  const removeBackgroundImage = async (image: BackgroundImageOption) => {
+    if (image.path && supabase && user) {
+      await supabase.storage.from(backgroundStorageBucket).remove([image.path]);
+    }
+
+    setDraftBackgroundSettings((currentSettings) => {
+      const uploadedImages = currentSettings.uploadedImages.filter((currentImage) => currentImage.id !== image.id);
+      const selectedImageId =
+        currentSettings.selectedImageId === image.id ? (uploadedImages[0]?.id ?? null) : currentSettings.selectedImageId;
+      return {
+        ...currentSettings,
+        uploadedImages,
+        selectedImageId,
+        mode: currentSettings.mode === "image" && !selectedImageId ? "mono" : currentSettings.mode,
+      };
+    });
+  };
+
+  const saveBackgroundSettings = async () => {
+    if (!hasBackgroundSettingsChanges) return;
+
+    const settingsToStore = createStoredBackgroundSettings(draftBackgroundSettings);
+    let confirmedSettings = createBackgroundSettingsFromStored(
+      settingsToStore,
+      draftBackgroundSettings.uploadedImages,
+    );
+
+    if (supabase && user) {
+      setIsSavingBackground(true);
+      updateBackgroundSaveStatus("saving");
+
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .upsert({
+            id: user.id,
+            email: user.email,
+            background_settings: settingsToStore,
+            updated_at: new Date().toISOString(),
+          })
+          .select("background_settings")
+          .eq("id", user.id)
+          .maybeSingle();
+        const confirmedStoredSettings = readStoredBackgroundSettings(data?.background_settings);
+
+        if (error || !confirmedStoredSettings) {
+          updateBackgroundSaveStatus("error");
+          setIsSavingBackground(false);
+          setBackgroundMessage(error?.message ?? "Could not confirm the saved background.");
+          return;
+        }
+
+        if (!areStoredBackgroundSettingsEqual(settingsToStore, confirmedStoredSettings)) {
+          updateBackgroundSaveStatus("error");
+          setIsSavingBackground(false);
+          setBackgroundMessage("Saved background did not match the selected background. Try again.");
+          return;
+        }
+
+        confirmedSettings = createBackgroundSettingsFromStored(
+          confirmedStoredSettings,
+          draftBackgroundSettings.uploadedImages,
+        );
+        updateBackgroundSaveStatus("saved");
+      } catch (error) {
+        updateBackgroundSaveStatus("error");
+        setBackgroundMessage(error instanceof Error ? error.message : "Background save failed.");
+        return;
+      } finally {
+        setIsSavingBackground(false);
+      }
+    }
+
+    window.localStorage.setItem("typewriter-background-settings", JSON.stringify(settingsToStore));
+    setBackgroundSettings(confirmedSettings);
+    setDraftBackgroundSettings(confirmedSettings);
+    if (!supabase || !user) updateBackgroundSaveStatus("saved");
+    setBackgroundMessage("");
+    setIsBackgroundOpen(false);
+    setColorPickerTarget(null);
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
@@ -1551,7 +2176,7 @@ function App() {
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isExportOpen || isDeleteConfirmOpen) {
+    if (isExportOpen || isDeleteConfirmOpen || isSettingsOpen || isBackgroundOpen) {
       event.preventDefault();
       return;
     }
@@ -1617,11 +2242,48 @@ function App() {
   };
 
   const isRibbonActive = activeSlugId !== null && isSlugPressed;
+  const renderColorPickerPanel = (target: Exclude<ColorPickerTarget, null>) =>
+    colorPickerTarget === target ? (
+      <section className="background-editor-section color-picker-section" aria-label="Custom color picker">
+        <div className="color-picker-header">
+          <h3>Custom Color</h3>
+          <button className="color-picker-close-button" type="button" onClick={() => setColorPickerTarget(null)} aria-label="Close color picker">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+            </svg>
+          </button>
+        </div>
+        <div
+          className="color-field"
+          style={{ backgroundColor: `hsl(${activePickerHsv.h} 100% 50%)` }}
+          onPointerDown={startColorPickerDrag}
+          onPointerMove={updateColorPickerDrag}
+        >
+          <span
+            className="color-field-thumb"
+            style={{
+              left: `${activePickerHsv.s * 100}%`,
+              top: `${(1 - activePickerHsv.v) * 100}%`,
+            }}
+          />
+        </div>
+        <div className="hue-slider" onPointerDown={startHueDrag} onPointerMove={updateHueDrag}>
+          <span className="hue-thumb" style={{ left: `${(activePickerHsv.h / 360) * 100}%` }} />
+        </div>
+      </section>
+    ) : null;
 
   return (
     <main
       className="app-shell"
-      onPointerDown={() => viewMode === "editor" && !isExportOpen && inputRef.current?.focus()}
+      style={{ background: backgroundCss }}
+      onPointerDown={() =>
+        viewMode === "editor" &&
+        !isExportOpen &&
+        !isSettingsOpen &&
+        !isBackgroundOpen &&
+        inputRef.current?.focus()
+      }
     >
       <textarea
         ref={inputRef}
@@ -1654,6 +2316,20 @@ function App() {
           {viewMode === "editor" ? (
             <>
               <button
+                className="glass-button icon-button menu-settings-button"
+                type="button"
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  openSettingsModal();
+                }}
+                aria-label="Open settings"
+                aria-expanded={isSettingsOpen || isBackgroundOpen}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M19.4 13.5c.08-.48.1-.98.1-1.5s-.02-1.02-.1-1.5l2-1.55-2-3.46-2.35.95c-.78-.6-1.44-.98-2.25-1.28L14.45 2h-4l-.35 3.16c-.81.3-1.55.72-2.25 1.28L5.5 5.49l-2 3.46 2 1.55c-.08.48-.1.98-.1 1.5s.02 1.02.1 1.5l-2 1.55 2 3.46 2.35-.95c.7.56 1.44.98 2.25 1.28l.35 3.16h4l.35-3.16c.81-.3 1.47-.68 2.25-1.28l2.35.95 2-3.46-2-1.55ZM12.45 15.5A3.5 3.5 0 1 1 12.45 8a3.5 3.5 0 0 1 0 7.5Z" />
+                </svg>
+              </button>
+              <button
                 className="glass-button icon-button menu-sound-button"
                 type="button"
                 onClick={(event) => {
@@ -1674,33 +2350,6 @@ function App() {
                   </svg>
                 )}
               </button>
-              <span className="select-shell">
-                <span className="select-value">
-                  Zoom {zoom === 1.5 ? "1x" : zoom === 1 ? "0.5x" : zoom === 1.25 ? "0.75x" : zoom === 1.75 ? "1.25x" : "1.5x"}
-                </span>
-                <select value={zoom} onChange={handleZoomChange} aria-label="Zoom">
-                  <option value={1}>Zoom 0.5x</option>
-                  <option value={1.25}>Zoom 0.75x</option>
-                  <option value={1.5}>Zoom 1x</option>
-                  <option value={1.75}>Zoom 1.25x</option>
-                  <option value={2}>Zoom 1.5x</option>
-                </select>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 9 5 5 5-5H7Z" />
-                </svg>
-              </span>
-              <span className="select-shell">
-                <span className="select-value">Line {lineSpacing === 0 ? "0" : `${lineSpacing}x`}</span>
-                <select value={lineSpacing} onChange={handleLineSpacingChange} aria-label="Line spacing">
-                  <option value={0}>Line 0</option>
-                  <option value={1}>Line 1x</option>
-                  <option value={1.5}>Line 1.5x</option>
-                  <option value={2}>Line 2x</option>
-                </select>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 9 5 5 5-5H7Z" />
-                </svg>
-              </span>
               <button
                 className="glass-button icon-button menu-help-button"
                 type="button"
@@ -1716,7 +2365,7 @@ function App() {
           ) : null}
           {user ? (
             <span className={`save-status save-status-${saveStatus}`}>
-              {saveStatus === "saving" ? "Saving..." : saveStatus === "error" ? "Save failed" : saveStatus === "saved" ? "Saved" : ""}
+              {saveStatusLabel}
             </span>
           ) : null}
         </div>
@@ -1799,8 +2448,9 @@ function App() {
               </svg>
               <span>New Page</span>
             </button>
-            {orderedPages.map((page, index) => {
+            {orderedPages.map((page) => {
               const isSelected = selectedPageIds.has(page.id);
+              const pageNumber = pageNumbersById.get(page.id) ?? 1;
 
               return (
                 <button
@@ -1809,7 +2459,7 @@ function App() {
                   key={page.id}
                   onClick={() => openSavedPage(page)}
                   aria-pressed={isSelectingPages ? isSelected : undefined}
-                  aria-label={isSelectingPages ? `${isSelected ? "Deselect" : "Select"} page ${index + 1}` : `Open page ${index + 1}`}
+                  aria-label={isSelectingPages ? `${isSelected ? "Deselect" : "Select"} page ${pageNumber}` : `Open page ${pageNumber}`}
                 >
                   {isSelectingPages ? (
                     <span className="page-selection-mark" aria-hidden="true">
@@ -1819,7 +2469,7 @@ function App() {
                     </span>
                   ) : null}
                   <span className="page-preview-content">{page.lines.join("\n")}</span>
-                  <span className="page-preview-label">Page {index + 1}</span>
+                  <span className="page-preview-label">Page {pageNumber}</span>
                 </button>
               );
             })}
@@ -1984,6 +2634,296 @@ function App() {
                 </button>
               )}
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {isSettingsOpen ? (
+        <div className="export-overlay settings-overlay" onPointerDown={closeSettingsModal}>
+          <section
+            className="export-modal settings-modal"
+            aria-label="Settings"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <div className="export-modal-header">
+              <h2>Settings</h2>
+              <button className="glass-button icon-button" type="button" onClick={closeSettingsModal} aria-label="Close settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="settings-content">
+              <section className="settings-section" aria-label="View settings">
+                <h3>
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5c5.2 0 8.4 5.1 8.9 6l.4.8-.4.8c-.5.9-3.7 6-8.9 6s-8.4-5.1-8.9-6l-.4-.8.4-.8c.5-.9 3.7-6 8.9-6Zm0 2c-3.9 0-6.5 3.8-7.2 4.8.7 1.1 3.3 4.8 7.2 4.8s6.5-3.8 7.2-4.8C18.5 10.8 15.9 7 12 7Zm0 2.2a2.6 2.6 0 1 1 0 5.2 2.6 2.6 0 0 1 0-5.2Z" />
+                  </svg>
+                  View
+                </h3>
+                <div className="settings-row">
+                  <span>Background</span>
+                  <button className="background-chip" type="button" onClick={openBackgroundModal} aria-label="Edit background">
+                    <span style={{ background: backgroundCss }} />
+                  </button>
+                </div>
+                <div className="settings-row">
+                  <span>Zoom</span>
+                  <span className="select-shell settings-select">
+                    <span className="select-value">
+                      {zoom === 1.5 ? "1x" : zoom === 1 ? "0.5x" : zoom === 1.25 ? "0.75x" : zoom === 1.75 ? "1.25x" : "1.5x"}
+                    </span>
+                    <select value={zoom} onChange={handleZoomChange} aria-label="Zoom">
+                      <option value={1}>0.5x</option>
+                      <option value={1.25}>0.75x</option>
+                      <option value={1.5}>1x</option>
+                      <option value={1.75}>1.25x</option>
+                      <option value={2}>1.5x</option>
+                    </select>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m7 9 5 5 5-5H7Z" />
+                    </svg>
+                  </span>
+                </div>
+              </section>
+
+              <section className="settings-section" aria-label="Page settings">
+                <h3>
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6 2h9l5 5v15H6V2Zm8 2H8v16h10V8h-4V4Zm-3 7h5v2h-5v-2Zm0 4h5v2h-5v-2Z" />
+                  </svg>
+                  Page
+                </h3>
+                <div className="settings-row">
+                  <span>Line Spacing</span>
+                  <span className="select-shell settings-select">
+                    <span className="select-value">{lineSpacing === 0 ? "0" : `${lineSpacing}x`}</span>
+                    <select value={lineSpacing} onChange={handleLineSpacingChange} aria-label="Line spacing">
+                      <option value={0}>0</option>
+                      <option value={1}>1x</option>
+                      <option value={1.5}>1.5x</option>
+                      <option value={2}>2x</option>
+                    </select>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m7 9 5 5 5-5H7Z" />
+                    </svg>
+                  </span>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {isBackgroundOpen ? (
+        <div className="export-overlay settings-overlay" onPointerDown={closeBackgroundModal}>
+          <section
+            className={`export-modal background-modal ${colorPickerTarget ? "is-picking-color" : ""}`}
+            aria-label="Background settings"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              if (
+                colorPickerTarget &&
+                event.target instanceof HTMLElement &&
+                !event.target.closest(".color-picker-section, .color-picker-anchor")
+              ) {
+                setColorPickerTarget(null);
+              }
+            }}
+          >
+            <div className="export-modal-header">
+              <div className="modal-title-with-back">
+                <button className="glass-button icon-button" type="button" onClick={returnToSettingsFromBackground} aria-label="Back to settings">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 11v2H7.8l5.6 5.6L12 20 4 12l8-8 1.4 1.4L7.8 11H20Z" />
+                  </svg>
+                </button>
+                <h2>Background</h2>
+              </div>
+              <button className="glass-button icon-button" type="button" onClick={closeBackgroundModal} aria-label="Close background settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="background-tabs" role="tablist" aria-label="Background mode">
+              {(["mono", "gradient", "image"] as BackgroundMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  className={backgroundTab === mode ? "is-active" : ""}
+                  type="button"
+                  onClick={() => {
+                    setBackgroundTab(mode);
+                    setDraftBackgroundSettings((currentSettings) => ({
+                      ...currentSettings,
+                      mode,
+                      selectedImageId:
+                        mode === "image" && !currentSettings.selectedImageId
+                          ? defaultBackgroundImages[0]?.id ?? null
+                          : currentSettings.selectedImageId,
+                    }));
+                    setColorPickerTarget(null);
+                  }}
+                >
+                  {mode === "mono" ? "Mono" : mode === "gradient" ? "Gradient" : "Image"}
+                </button>
+              ))}
+            </div>
+
+            <div className="background-modal-scroll">
+              <section className="background-editor-section" aria-label="Background preview">
+                <h3>Preview</h3>
+                <div className="background-preview-card">
+                  <div className="background-preview-fill" style={{ background: draftBackgroundCss }} />
+                  <img className="background-preview-typewriter" src={ASSETS.typewriterTemplate} alt="" aria-hidden="true" />
+                </div>
+              </section>
+
+              {backgroundTab === "mono" ? (
+                <section className="background-editor-section" aria-label="Mono background colors">
+                  <h3>Colors</h3>
+                  <div className="color-swatches">
+                    {monoSwatches.map((color) => (
+                      <button
+                        key={color}
+                        className={`color-swatch ${normalizeHexColor(draftBackgroundSettings.monoColor) === color ? "is-active" : ""}`}
+                        type="button"
+                        onClick={() => updateBackgroundColor("mono", color)}
+                        aria-label={`Use ${getHexLabel(color)} background`}
+                      >
+                        <span style={{ background: color }} />
+                      </button>
+                    ))}
+                  </div>
+                  <div className="settings-row">
+                    <span>Custom color</span>
+                    <span className="color-picker-anchor">
+                      {renderColorPickerPanel("mono")}
+                      <button className="color-value-button" type="button" onClick={() => setColorPickerTarget(colorPickerTarget === "mono" ? null : "mono")}>
+                        <span>{getHexLabel(draftBackgroundSettings.monoColor)}</span>
+                        <i style={{ background: draftBackgroundSettings.monoColor }} />
+                      </button>
+                    </span>
+                  </div>
+                </section>
+              ) : null}
+
+              {backgroundTab === "gradient" ? (
+                <section className="background-editor-section" aria-label="Gradient background colors">
+                  <h3>Colors</h3>
+                  <div className="settings-row">
+                    <span>Gradient Orientation</span>
+                    <label className="angle-input-shell">
+                      <input
+                        type="number"
+                        min={0}
+                        max={360}
+                        value={draftBackgroundSettings.gradientAngle}
+                        onChange={(event) =>
+                          setDraftBackgroundSettings((currentSettings) => ({
+                            ...currentSettings,
+                            gradientAngle: clamp(Number(event.target.value), 0, 360),
+                            mode: "gradient",
+                          }))
+                        }
+                        aria-label="Gradient orientation"
+                      />
+                      <span>°</span>
+                    </label>
+                  </div>
+                  <div className="settings-row">
+                    <span>Color 1</span>
+                    <span className="color-picker-anchor">
+                      {renderColorPickerPanel("gradient-1")}
+                      <button className="color-value-button" type="button" onClick={() => setColorPickerTarget(colorPickerTarget === "gradient-1" ? null : "gradient-1")}>
+                        <span>{getHexLabel(draftBackgroundSettings.gradientColor1)}</span>
+                        <i style={{ background: draftBackgroundSettings.gradientColor1 }} />
+                      </button>
+                    </span>
+                  </div>
+                  <div className="settings-row">
+                    <span>Color 2</span>
+                    <span className="color-picker-anchor">
+                      {renderColorPickerPanel("gradient-2")}
+                      <button className="color-value-button" type="button" onClick={() => setColorPickerTarget(colorPickerTarget === "gradient-2" ? null : "gradient-2")}>
+                        <span>{getHexLabel(draftBackgroundSettings.gradientColor2)}</span>
+                        <i style={{ background: draftBackgroundSettings.gradientColor2 }} />
+                      </button>
+                    </span>
+                  </div>
+                </section>
+              ) : null}
+
+              {backgroundTab === "image" ? (
+                <section className="background-editor-section" aria-label="Image backgrounds">
+                  <h3>Images</h3>
+                  <input
+                    ref={backgroundUploadInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg"
+                    className="hidden-file-input"
+                    onChange={uploadBackgroundImage}
+                  />
+                  <div className="image-grid">
+                    <button
+                      className="image-upload-card"
+                      type="button"
+                      onClick={() => backgroundUploadInputRef.current?.click()}
+                      disabled={isUploadingBackground || draftBackgroundSettings.uploadedImages.filter((image) => image.isUserUpload).length >= 2}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M11 16V7.8l-3.2 3.2L6.4 9.6 12 4l5.6 5.6-1.4 1.4L13 7.8V16h-2Zm-6 2h14v2H5v-2Z" />
+                      </svg>
+                      <strong>{isUploadingBackground ? "Uploading..." : "Upload Image"}</strong>
+                      <span>.PNG, .jpg</span>
+                    </button>
+                    {availableDraftBackgroundImages.map((image) => (
+                      <div
+                        key={image.id}
+                        className={`image-choice ${draftBackgroundSettings.selectedImageId === image.id ? "is-active" : ""}`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDraftBackgroundSettings((currentSettings) => ({
+                              ...currentSettings,
+                              mode: "image",
+                              selectedImageId: image.id,
+                            }))
+                          }
+                          aria-label={`Use ${image.name} background`}
+                        >
+                          <img src={image.url} alt="" />
+                        </button>
+                        {image.isUserUpload ? (
+                          <button className="image-remove-button" type="button" onClick={() => void removeBackgroundImage(image)} aria-label={`Remove ${image.name}`}>
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
+                            </svg>
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                  {backgroundMessage ? <p className="background-message">{backgroundMessage}</p> : null}
+                </section>
+              ) : null}
+            </div>
+
+            {backgroundTab !== "image" && backgroundMessage ? <p className="background-message">{backgroundMessage}</p> : null}
+            {backgroundTab === "image" && selectedBackgroundImage ? (
+              <p className="background-message">Selected: {selectedBackgroundImage.name}</p>
+            ) : null}
+            <button
+              className="export-submit background-save-button"
+              type="button"
+              onClick={saveBackgroundSettings}
+              disabled={!hasBackgroundSettingsChanges || isSavingBackground}
+            >
+              {isSavingBackground ? "Saving..." : "Confirm"}
+            </button>
           </section>
         </div>
       ) : null}
