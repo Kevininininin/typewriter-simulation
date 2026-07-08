@@ -520,6 +520,10 @@ function App() {
   const currentLineIndexRef = useRef(currentLineIndex);
   const carriageDragRef = useRef<CarriageDrag | null>(null);
   const pageDragRef = useRef<PageDrag | null>(null);
+  const carriageDragFrameRef = useRef<number | null>(null);
+  const pageDragFrameRef = useRef<number | null>(null);
+  const pendingCarriageColumnRef = useRef<number | null>(null);
+  const pendingDragFeedRef = useRef<number | null>(null);
   const marginDingedRef = useRef(false);
   const saveTimeoutRef = useRef<number | null>(null);
   const keyPressAudioRef = useRef<HTMLAudioElement[]>([]);
@@ -710,7 +714,8 @@ function App() {
 
     const updateScale = () => {
       const { width, height } = viewport.getBoundingClientRect();
-      setStageScale(Math.min(width / FIGMA.frameWidth, height / FIGMA.frameHeight));
+      const nextScale = Math.min(width / FIGMA.frameWidth, height / FIGMA.frameHeight);
+      setStageScale((currentScale) => (Math.abs(currentScale - nextScale) < 0.0001 ? currentScale : nextScale));
       setIsStageMeasured(true);
     };
 
@@ -730,6 +735,8 @@ function App() {
     return () => {
       if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
       if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
+      if (carriageDragFrameRef.current) window.cancelAnimationFrame(carriageDragFrameRef.current);
+      if (pageDragFrameRef.current) window.cancelAnimationFrame(pageDragFrameRef.current);
     };
   }, []);
 
@@ -745,13 +752,19 @@ function App() {
   };
 
   const setDocumentCursorColumn = (nextCursorColumn: number) => {
+    if (cursorColumnRef.current === nextCursorColumn) return;
     cursorColumnRef.current = nextCursorColumn;
     setCursorColumn(nextCursorColumn);
   };
 
   const setDocumentLineIndex = (nextLineIndex: number) => {
+    if (currentLineIndexRef.current === nextLineIndex) return;
     currentLineIndexRef.current = nextLineIndex;
     setCurrentLineIndex(nextLineIndex);
+  };
+
+  const setReadyNotice = () => {
+    setNotice((currentNotice) => (currentNotice === "ready" ? currentNotice : "ready"));
   };
 
   const setCurrentLine = (line: string, nextCursorColumn: number) => {
@@ -1106,7 +1119,7 @@ function App() {
     setDocumentCursorColumn(0);
     setDragFeed(null);
     marginDingedRef.current = false;
-    setNotice("ready");
+    setReadyNotice();
     inputRef.current?.focus();
   };
 
@@ -1153,7 +1166,7 @@ function App() {
     setDocumentCursorColumn(lastContentPosition.cursorColumn);
     setDragFeed(null);
     marginDingedRef.current = false;
-    setNotice("ready");
+    setReadyNotice();
     setViewMode("editor");
     setIsExportOpen(false);
     window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -1284,7 +1297,7 @@ function App() {
     }
 
     if (shouldPlayReturnSound(line, cursorColumnRef.current)) playNewLine();
-    setNotice("ready");
+    setReadyNotice();
     const nextLines = [...previous];
     const nextLineBreaks = [...previousLineBreaks];
     nextLines.splice(index + 1, 0, "");
@@ -1318,7 +1331,7 @@ function App() {
     }
 
     marginDingedRef.current = false;
-    setNotice("ready");
+    setReadyNotice();
     setCurrentLine(candidate, nextCursor);
   };
 
@@ -1344,7 +1357,7 @@ function App() {
     }
 
     marginDingedRef.current = false;
-    setNotice("ready");
+    setReadyNotice();
   };
 
   const typeText = (text: string, options: { playKeySounds?: boolean } = {}) => {
@@ -1363,7 +1376,7 @@ function App() {
   const moveCursorLeft = () => {
     setDocumentCursorColumn(Math.max(0, cursorColumnRef.current - 1));
     marginDingedRef.current = false;
-    setNotice("ready");
+    setReadyNotice();
   };
 
   const moveCursorRight = () => {
@@ -1373,17 +1386,82 @@ function App() {
     if (cursor < line.length) {
       setDocumentCursorColumn(cursor + 1);
       marginDingedRef.current = false;
-      setNotice("ready");
+      setReadyNotice();
       return;
     }
 
     addCharacter(" ");
   };
 
+  const getCarriageColumnForClientX = (drag: CarriageDrag, clientX: number) => {
+    const effectiveScale = stageScale * zoom || 1;
+    const targetAdvance = clamp(drag.startAdvance - (clientX - drag.startClientX) / effectiveScale, 0, maxAdvance);
+    const line = linesRef.current[currentLineIndexRef.current] ?? "";
+    return getClosestCursorColumn(line, targetAdvance);
+  };
+
+  const commitPendingCarriageDrag = () => {
+    carriageDragFrameRef.current = null;
+    const nextColumn = pendingCarriageColumnRef.current;
+    pendingCarriageColumnRef.current = null;
+    if (nextColumn === null) return;
+
+    setDocumentCursorColumn(nextColumn);
+    marginDingedRef.current = false;
+    setReadyNotice();
+  };
+
+  const scheduleCarriageDragCommit = (nextColumn: number) => {
+    pendingCarriageColumnRef.current = nextColumn;
+    if (carriageDragFrameRef.current !== null) return;
+    carriageDragFrameRef.current = window.requestAnimationFrame(commitPendingCarriageDrag);
+  };
+
+  const cancelPendingCarriageDrag = () => {
+    if (carriageDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(carriageDragFrameRef.current);
+      carriageDragFrameRef.current = null;
+    }
+    pendingCarriageColumnRef.current = null;
+  };
+
+  const getPageFeedForClientY = (drag: PageDrag, clientY: number) => {
+    const effectiveScale = stageScale * zoom || 1;
+    return clamp(drag.startFeed - (clientY - drag.startClientY) / effectiveScale, 0, maxFeed);
+  };
+
+  const commitPendingPageDrag = () => {
+    pageDragFrameRef.current = null;
+    const nextFeed = pendingDragFeedRef.current;
+    pendingDragFeedRef.current = null;
+    if (nextFeed === null) return;
+
+    setDragFeed((currentFeed) => {
+      if (currentFeed !== null && Math.abs(currentFeed - nextFeed) < 0.5) return currentFeed;
+      return nextFeed;
+    });
+    setReadyNotice();
+  };
+
+  const schedulePageDragCommit = (nextFeed: number) => {
+    pendingDragFeedRef.current = nextFeed;
+    if (pageDragFrameRef.current !== null) return;
+    pageDragFrameRef.current = window.requestAnimationFrame(commitPendingPageDrag);
+  };
+
+  const cancelPendingPageDrag = () => {
+    if (pageDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(pageDragFrameRef.current);
+      pageDragFrameRef.current = null;
+    }
+    pendingDragFeedRef.current = null;
+  };
+
   const startCarriageDrag = (event: PointerEvent<HTMLDivElement>) => {
     if ((event.target as Element).closest("[data-page-surface]")) return;
 
     event.preventDefault();
+    cancelPendingCarriageDrag();
     event.currentTarget.setPointerCapture(event.pointerId);
     carriageDragRef.current = {
       pointerId: event.pointerId,
@@ -1399,12 +1477,7 @@ function App() {
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     event.preventDefault();
-    const effectiveScale = stageScale * zoom || 1;
-    const targetAdvance = clamp(drag.startAdvance - (event.clientX - drag.startClientX) / effectiveScale, 0, maxAdvance);
-    const line = linesRef.current[currentLineIndexRef.current] ?? "";
-    setDocumentCursorColumn(getClosestCursorColumn(line, targetAdvance));
-    marginDingedRef.current = false;
-    setNotice("ready");
+    scheduleCarriageDragCommit(getCarriageColumnForClientX(drag, event.clientX));
   };
 
   const finishCarriageDrag = (event: PointerEvent<HTMLDivElement>) => {
@@ -1416,6 +1489,8 @@ function App() {
     }
 
     carriageDragRef.current = null;
+    cancelPendingCarriageDrag();
+    setDocumentCursorColumn(getCarriageColumnForClientX(drag, event.clientX));
     setIsCarriageDragging(false);
     fillCurrentLineToCursor();
     inputRef.current?.focus();
@@ -1424,6 +1499,7 @@ function App() {
   const startPageDrag = (event: PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    cancelPendingPageDrag();
     event.currentTarget.setPointerCapture(event.pointerId);
     pageDragRef.current = {
       pointerId: event.pointerId,
@@ -1440,10 +1516,7 @@ function App() {
 
     event.preventDefault();
     event.stopPropagation();
-    const effectiveScale = stageScale * zoom || 1;
-    const targetFeed = clamp(drag.startFeed - (event.clientY - drag.startClientY) / effectiveScale, 0, maxFeed);
-    setDragFeed(targetFeed);
-    setNotice("ready");
+    schedulePageDragCommit(getPageFeedForClientY(drag, event.clientY));
   };
 
   const finishPageDrag = (event: PointerEvent<HTMLDivElement>) => {
@@ -1457,8 +1530,8 @@ function App() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
 
-    const effectiveScale = stageScale * zoom || 1;
-    const targetFeed = clamp(drag.startFeed - (event.clientY - drag.startClientY) / effectiveScale, 0, maxFeed);
+    cancelPendingPageDrag();
+    const targetFeed = getPageFeedForClientY(drag, event.clientY);
     const snappedLineIndex = ensureLineIndexExists(getClosestLineIndex(targetFeed));
     setDocumentLineIndex(snappedLineIndex);
     pageDragRef.current = null;

@@ -515,12 +515,12 @@ select {
   transition: transform 110ms ease-out;
   cursor: grab;
   touch-action: none;
-  will-change: transform;
 }
 
 .carriage.is-dragging {
   cursor: grabbing;
   transition: none;
+  will-change: transform;
 }
 
 .carriage-alert {
@@ -1160,6 +1160,21 @@ select {
 @keyframes carriage-bump {
   50% {
     translate: -12px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+
+  .typing-cursor {
+    animation: none;
   }
 }
 
