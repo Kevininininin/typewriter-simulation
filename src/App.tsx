@@ -134,7 +134,9 @@ const AUDIO = {
     "/assets/audio/key%20press%206.mp3",
   ],
   newLine: "/assets/audio/new%20line.mp3",
+  carriageDrag: "/assets/audio/new%20line%20on%20drag.mp3",
 };
+const carriageDragLoopOverlapSeconds = 0.12;
 
 type Notice = "ready" | "margin" | "page-end";
 type LineSpacing = 0 | 1 | 1.5 | 2;
@@ -189,6 +191,7 @@ type CarriageDrag = {
   pointerId: number;
   startClientX: number;
   startAdvance: number;
+  hasMoved: boolean;
 };
 type PageDrag = {
   pointerId: number;
@@ -546,55 +549,7 @@ function downloadBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-function sanitizePdfText(text: string): string {
-  return text
-    .replace(/[^\x20-\x7e]/g, "?")
-    .replace(/\\/g, "\\\\")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)");
-}
-
-function createPdfBlob(lines: string[], lineBreaks: LineBreak[]): Blob {
-  const lineTops = getLineTops(lineBreaks, lines.length);
-  const scale = (exportPdfWidth - exportPdfMargin * 2) / FIGMA.printableWidth;
-  const fontSize = FIGMA.typeSize * scale;
-  const textCommands = lines
-    .map((line, index) => {
-      const y = exportPdfHeight - exportPdfMargin - fontSize - (lineTops[index] ?? 0) * scale;
-      if (y < exportPdfMargin) return "";
-      return `1 0 0 1 ${exportPdfMargin.toFixed(2)} ${y.toFixed(2)} Tm (${sanitizePdfText(line)}) Tj`;
-    })
-    .filter(Boolean)
-    .join("\n");
-  const stream = `0.929 0.886 0.816 rg\n0 0 ${exportPdfWidth} ${exportPdfHeight} re f\n0 0 0 rg\nBT\n/F1 ${fontSize.toFixed(2)} Tf\n${textCommands}\nET`;
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${exportPdfWidth} ${exportPdfHeight}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
-    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-
-  objects.forEach((object, index) => {
-    offsets.push(pdf.length);
-    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-
-  const xrefOffset = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  offsets.slice(1).forEach((offset) => {
-    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
-  });
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-
-  return new Blob([pdf], { type: "application/pdf" });
-}
-
-async function createPngBlob(lines: string[], lineBreaks: LineBreak[]): Promise<Blob> {
-  if ("fonts" in document) await document.fonts.load(fontSpec);
-
+function createExportCanvas(lines: string[], lineBreaks: LineBreak[]): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = exportCanvasWidth;
   canvas.height = exportCanvasHeight;
@@ -616,12 +571,102 @@ async function createPngBlob(lines: string[], lineBreaks: LineBreak[]): Promise<
     }
   });
 
+  return canvas;
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("Could not export PNG."));
-    }, "image/png");
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error(`Could not export ${type}.`));
+      },
+      type,
+      quality,
+    );
   });
+}
+
+function sanitizePdfText(text: string): string {
+  return text
+    .replace(/[^\x20-\x7e]/g, "?")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+async function createPdfBlob(lines: string[], lineBreaks: LineBreak[]): Promise<Blob> {
+  if ("fonts" in document) await document.fonts.load(fontSpec);
+
+  const measurementCanvas = document.createElement("canvas");
+  const context = measurementCanvas.getContext("2d");
+  if (!context) throw new Error("Could not create PDF measurement canvas.");
+
+  const lineTops = getLineTops(lineBreaks, lines.length);
+  const canvasTextScale = (exportCanvasWidth - exportCanvasMargin * 2) / FIGMA.printableWidth;
+  const pdfScale = exportPdfWidth / exportCanvasWidth;
+  const canvasFontSize = FIGMA.typeSize * canvasTextScale;
+  const pdfFontSize = canvasFontSize * pdfScale;
+  context.font = `${canvasFontSize}px "Special Elite", "Courier New", monospace`;
+  context.textBaseline = "alphabetic";
+  const metrics = context.measureText("H");
+  const baselineOffset = (metrics.actualBoundingBoxAscent || canvasFontSize * 0.8) * pdfScale;
+  const textCommands = lines
+    .flatMap((line, lineIndex) => {
+      const canvasY = exportCanvasMargin + (lineTops[lineIndex] ?? 0) * canvasTextScale;
+      const y = exportPdfHeight - canvasY * pdfScale - baselineOffset;
+      if (y < exportPdfMargin || y > exportPdfHeight - exportPdfMargin + pdfFontSize) return [];
+
+      return Array.from(line).map((character, characterIndex) => {
+        const prefix = line.slice(0, characterIndex);
+        const canvasX = exportCanvasMargin + context.measureText(prefix).width;
+        const x = canvasX * pdfScale;
+        return `1 0 0 1 ${x.toFixed(2)} ${y.toFixed(2)} Tm (${sanitizePdfText(character)}) Tj`;
+      });
+    })
+    .join("\n");
+  const stream = `0.929 0.886 0.816 rg\n0 0 ${exportPdfWidth} ${exportPdfHeight} re f\nBT\n0 0 0 rg\n/F1 ${pdfFontSize.toFixed(2)} Tf\n${textCommands}\nET`;
+  const encoder = new TextEncoder();
+  const chunks: BlobPart[] = [];
+  const offsets = [0];
+  let byteLength = 0;
+  const appendString = (value: string) => {
+    chunks.push(value);
+    byteLength += encoder.encode(value).byteLength;
+  };
+  const addObject = (content: () => void) => {
+    offsets.push(byteLength);
+    appendString(`${offsets.length - 1} 0 obj\n`);
+    content();
+    appendString("\nendobj\n");
+  };
+
+  appendString("%PDF-1.4\n");
+  addObject(() => appendString("<< /Type /Catalog /Pages 2 0 R >>"));
+  addObject(() => appendString("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"));
+  addObject(() =>
+    appendString(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${exportPdfWidth} ${exportPdfHeight}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`,
+    ),
+  );
+  addObject(() => appendString("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"));
+  addObject(() => appendString(`<< /Length ${encoder.encode(stream).byteLength} >>\nstream\n${stream}\nendstream`));
+
+  const xrefOffset = byteLength;
+  appendString(`xref\n0 ${offsets.length}\n0000000000 65535 f \n`);
+  offsets.slice(1).forEach((offset) => {
+    appendString(`${String(offset).padStart(10, "0")} 00000 n \n`);
+  });
+  appendString(`trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+
+  return new Blob(chunks, { type: "application/pdf" });
+}
+
+async function createPngBlob(lines: string[], lineBreaks: LineBreak[]): Promise<Blob> {
+  if ("fonts" in document) await document.fonts.load(fontSpec);
+
+  const canvas = createExportCanvas(lines, lineBreaks);
+  return canvasToBlob(canvas, "image/png");
 }
 
 function getLinePrefix(line: string, column: number): string {
@@ -768,6 +813,11 @@ function App() {
   const keyPressAudioRef = useRef<HTMLAudioElement[]>([]);
   const dingAudioRef = useRef<HTMLAudioElement | null>(null);
   const newLineAudioRef = useRef<HTMLAudioElement | null>(null);
+  const carriageDragAudioContextRef = useRef<AudioContext | null>(null);
+  const carriageDragBufferRef = useRef<AudioBuffer | null>(null);
+  const carriageDragSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const carriageDragLoopTimeoutRef = useRef<number | null>(null);
+  const isCarriageDragAudioPlayingRef = useRef(false);
   const viewportRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const backgroundUploadInputRef = useRef<HTMLInputElement>(null);
@@ -1097,6 +1147,16 @@ function App() {
 
     newLineAudioRef.current = new Audio(AUDIO.newLine);
     newLineAudioRef.current.preload = "auto";
+
+    const audioContext = new AudioContext();
+    carriageDragAudioContextRef.current = audioContext;
+    void fetch(AUDIO.carriageDrag)
+      .then((response) => response.arrayBuffer())
+      .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
+      .then((buffer) => {
+        carriageDragBufferRef.current = buffer;
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -1125,11 +1185,17 @@ function App() {
   }, [notice]);
 
   useEffect(() => {
+    if (isMuted) stopCarriageDragLoop();
+  }, [isMuted]);
+
+  useEffect(() => {
     return () => {
       if (releaseTimeoutRef.current) window.clearTimeout(releaseTimeoutRef.current);
       if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
       if (carriageDragFrameRef.current) window.cancelAnimationFrame(carriageDragFrameRef.current);
       if (pageDragFrameRef.current) window.cancelAnimationFrame(pageDragFrameRef.current);
+      stopCarriageDragLoop();
+      void carriageDragAudioContextRef.current?.close();
     };
   }, []);
 
@@ -1474,6 +1540,58 @@ function App() {
     if (!audio || isMuted) return;
     audio.currentTime = 0;
     void audio.play().catch(() => undefined);
+  };
+
+  const scheduleCarriageDragLoopSegment = () => {
+    const audioContext = carriageDragAudioContextRef.current;
+    const buffer = carriageDragBufferRef.current;
+    if (!audioContext || !buffer || isMuted || !isCarriageDragAudioPlayingRef.current) return;
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    carriageDragSourcesRef.current.add(source);
+    source.onended = () => {
+      carriageDragSourcesRef.current.delete(source);
+      source.disconnect();
+    };
+    source.start();
+
+    const nextStartDelay = Math.max(0.02, buffer.duration - carriageDragLoopOverlapSeconds);
+    carriageDragLoopTimeoutRef.current = window.setTimeout(
+      scheduleCarriageDragLoopSegment,
+      nextStartDelay * 1000,
+    );
+  };
+
+  const playCarriageDragLoop = () => {
+    const audioContext = carriageDragAudioContextRef.current;
+    const buffer = carriageDragBufferRef.current;
+    if (!audioContext || !buffer || isMuted || isCarriageDragAudioPlayingRef.current) return;
+
+    isCarriageDragAudioPlayingRef.current = true;
+    void audioContext.resume().then(scheduleCarriageDragLoopSegment).catch(() => {
+      isCarriageDragAudioPlayingRef.current = false;
+    });
+  };
+
+  const stopCarriageDragLoop = () => {
+    isCarriageDragAudioPlayingRef.current = false;
+    if (carriageDragLoopTimeoutRef.current !== null) {
+      window.clearTimeout(carriageDragLoopTimeoutRef.current);
+      carriageDragLoopTimeoutRef.current = null;
+    }
+
+    carriageDragSourcesRef.current.forEach((source) => {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+        // Already stopped sources can be ignored.
+      }
+      source.disconnect();
+    });
+    carriageDragSourcesRef.current.clear();
   };
 
   const playRandomKeyPress = () => {
@@ -1899,7 +2017,7 @@ function App() {
       const currentLineBreaks = lineBreaksRef.current;
       const blob =
         exportFormat === "pdf"
-          ? createPdfBlob(currentLines, currentLineBreaks)
+          ? await createPdfBlob(currentLines, currentLineBreaks)
           : await createPngBlob(currentLines, currentLineBreaks);
       downloadBlob(blob, getDownloadName(exportFileName, exportFormat));
       closeExportModal();
@@ -2092,6 +2210,7 @@ function App() {
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startAdvance: measure(getLinePrefix(linesRef.current[currentLineIndexRef.current] ?? "", cursorColumnRef.current)),
+      hasMoved: false,
     };
     setIsCarriageDragging(true);
     inputRef.current?.focus();
@@ -2102,6 +2221,10 @@ function App() {
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     event.preventDefault();
+    if (!drag.hasMoved && Math.abs(event.clientX - drag.startClientX) > 1) {
+      drag.hasMoved = true;
+      playCarriageDragLoop();
+    }
     scheduleCarriageDragCommit(getCarriageColumnForClientX(drag, event.clientX));
   };
 
@@ -2115,6 +2238,7 @@ function App() {
 
     carriageDragRef.current = null;
     cancelPendingCarriageDrag();
+    stopCarriageDragLoop();
     setDocumentCursorColumn(getCarriageColumnForClientX(drag, event.clientX));
     setIsCarriageDragging(false);
     fillCurrentLineToCursor();
