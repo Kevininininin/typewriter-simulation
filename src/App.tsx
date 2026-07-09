@@ -874,9 +874,6 @@ function App() {
   const backgroundCss = getBackgroundCss(backgroundSettings);
   const draftBackgroundCss = getBackgroundCss(draftBackgroundSettings);
   const availableDraftBackgroundImages = getAvailableBackgroundImages(draftBackgroundSettings);
-  const selectedBackgroundImage = availableDraftBackgroundImages.find(
-    (image) => image.id === draftBackgroundSettings.selectedImageId,
-  );
   const hasBackgroundSettingsChanges = useMemo(
     () =>
       JSON.stringify(createStoredBackgroundSettings(draftBackgroundSettings)) !==
@@ -3103,9 +3100,6 @@ function App() {
             </div>
 
             {backgroundTab !== "image" && backgroundMessage ? <p className={`background-message is-${backgroundMessageTone}`}>{backgroundMessage}</p> : null}
-            {backgroundTab === "image" && selectedBackgroundImage ? (
-              <p className="background-message is-info">Selected: {selectedBackgroundImage.name}</p>
-            ) : null}
             <button
               className="export-submit background-save-button"
               type="button"
