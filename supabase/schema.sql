@@ -75,7 +75,7 @@ values (
   'background-images',
   false,
   5242880,
-  array['image/png', 'image/jpeg', 'image/jpg']
+  array['image/png', 'image/jpeg']
 )
 on conflict (id) do update
 set

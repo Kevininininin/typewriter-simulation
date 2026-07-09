@@ -52,6 +52,10 @@ const maxPaperBottomLift = Math.max(60, FIGMA.paperBottom - (FIGMA.cursorY + pap
 const defaultZoom = 1.5;
 const initialZoom = defaultZoom;
 const backgroundStorageBucket = "background-images";
+const maxBackgroundUploads = 2;
+const maxBackgroundImageBytes = 5 * 1024 * 1024;
+const maxBackgroundImageSizeLabel = "5 MB";
+const allowedBackgroundImageTypes = new Set(["image/png", "image/jpeg"]);
 const exportCanvasWidth = 1632;
 const exportCanvasHeight = 2112;
 const exportCanvasMargin = 192;
@@ -146,6 +150,7 @@ type PendingAuthAction = "new-page" | "export" | null;
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type SaveStatusSource = "page" | "background" | null;
 type BackgroundMode = "mono" | "gradient" | "image";
+type BackgroundMessageTone = "info" | "error";
 type ColorPickerTarget = "mono" | "gradient-1" | "gradient-2" | null;
 type LineBreak = {
   afterLineIndex: number;
@@ -781,6 +786,8 @@ function App() {
   const [isUploadingBackground, setIsUploadingBackground] = useState(false);
   const [isSavingBackground, setIsSavingBackground] = useState(false);
   const [backgroundMessage, setBackgroundMessage] = useState("");
+  const [backgroundMessageTone, setBackgroundMessageTone] = useState<BackgroundMessageTone>("info");
+  const [backgroundRemovedImagePaths, setBackgroundRemovedImagePaths] = useState<string[]>([]);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
@@ -894,6 +901,29 @@ function App() {
   const updateBackgroundSaveStatus = (status: SaveStatus) => {
     setSaveStatusSource(status === "idle" ? null : "background");
     setSaveStatus(status);
+  };
+
+  const setBackgroundNotice = (message: string, tone: BackgroundMessageTone = "info") => {
+    setBackgroundMessage(message);
+    setBackgroundMessageTone(tone);
+  };
+
+  const getUnsavedBackgroundUploadPaths = (settings: BackgroundSettings) => {
+    const savedPaths = new Set(backgroundSettings.uploadedImages.map((image) => image.path).filter(Boolean));
+    return settings.uploadedImages
+      .filter((image) => image.isUserUpload && image.path && !savedPaths.has(image.path))
+      .map((image) => image.path as string);
+  };
+
+  const removeStoredBackgroundImages = async (paths: string[]) => {
+    const uniquePaths = Array.from(new Set(paths.filter(Boolean)));
+    if (!supabase || !user || uniquePaths.length === 0) return;
+    const { error } = await supabase.storage.from(backgroundStorageBucket).remove(uniquePaths);
+    if (error) throw error;
+  };
+
+  const cleanupUnconfirmedBackgroundUploads = (settings: BackgroundSettings) => {
+    void removeStoredBackgroundImages(getUnsavedBackgroundUploadPaths(settings)).catch(() => undefined);
   };
 
   const saveStatusLabel =
@@ -1771,23 +1801,28 @@ function App() {
     setIsBackgroundOpen(true);
     setIsSettingsOpen(false);
     setColorPickerTarget(null);
-    setBackgroundMessage("");
+    setBackgroundNotice("");
+    setBackgroundRemovedImagePaths([]);
   };
 
   const closeBackgroundModal = () => {
+    cleanupUnconfirmedBackgroundUploads(draftBackgroundSettings);
     setIsBackgroundOpen(false);
     setDraftBackgroundSettings(backgroundSettings);
     setColorPickerTarget(null);
-    setBackgroundMessage("");
+    setBackgroundNotice("");
+    setBackgroundRemovedImagePaths([]);
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   const returnToSettingsFromBackground = () => {
+    cleanupUnconfirmedBackgroundUploads(draftBackgroundSettings);
     setIsBackgroundOpen(false);
     setIsSettingsOpen(true);
     setDraftBackgroundSettings(backgroundSettings);
     setColorPickerTarget(null);
-    setBackgroundMessage("");
+    setBackgroundNotice("");
+    setBackgroundRemovedImagePaths([]);
   };
 
   const updateBackgroundColor = (target: ColorPickerTarget, color: string) => {
@@ -1842,39 +1877,47 @@ function App() {
     event.target.value = "";
     if (!file) return;
 
-    if (!file.type.startsWith("image/")) {
-      setBackgroundMessage("Choose a PNG or JPG image.");
+    if (!allowedBackgroundImageTypes.has(file.type)) {
+      setBackgroundNotice("Choose a PNG or JPG image.", "error");
+      return;
+    }
+
+    if (file.size > maxBackgroundImageBytes) {
+      setBackgroundNotice(`Image is too large. Upload a PNG or JPG under ${maxBackgroundImageSizeLabel}.`, "error");
       return;
     }
 
     if (!user || !supabase) {
-      setBackgroundMessage("Sign in to store uploaded background images.");
+      setBackgroundNotice("Sign in to store uploaded background images.", "error");
       return;
     }
 
     const existingUploads = draftBackgroundSettings.uploadedImages.filter((image) => image.isUserUpload);
-    if (existingUploads.length >= 2) {
-      setBackgroundMessage("You can store up to two uploaded images.");
+    if (existingUploads.length >= maxBackgroundUploads) {
+      setBackgroundNotice(`You can store up to ${maxBackgroundUploads} uploaded images.`, "error");
       return;
     }
 
-    const extension = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "png";
+    const extension = file.type === "image/png" ? "png" : "jpg";
     const id = createPageId();
     const path = `${user.id}/${id}.${extension}`;
 
     setIsUploadingBackground(true);
-    setBackgroundMessage("");
+    setBackgroundNotice("");
 
     try {
       const { error: uploadError } = await supabase.storage
         .from(backgroundStorageBucket)
-        .upload(path, file, { cacheControl: "3600", upsert: false });
+        .upload(path, file, { cacheControl: "3600", contentType: file.type, upsert: false });
       if (uploadError) throw uploadError;
 
       const { data: signedUrlData, error: signedUrlError } = await supabase.storage
         .from(backgroundStorageBucket)
         .createSignedUrl(path, 60 * 60);
-      if (signedUrlError || !signedUrlData?.signedUrl) throw signedUrlError ?? new Error("Could not load uploaded image.");
+      if (signedUrlError || !signedUrlData?.signedUrl) {
+        await removeStoredBackgroundImages([path]);
+        throw signedUrlError ?? new Error("Could not load uploaded image.");
+      }
 
       const imageOption: BackgroundImageOption = {
         id,
@@ -1888,25 +1931,32 @@ function App() {
         ...currentSettings,
         mode: "image",
         selectedImageId: id,
-        uploadedImages: [...currentSettings.uploadedImages.filter((image) => image.isUserUpload).slice(0, 1), imageOption],
+        uploadedImages: [...currentSettings.uploadedImages.filter((image) => image.isUserUpload), imageOption].slice(
+          0,
+          maxBackgroundUploads,
+        ),
       }));
       setBackgroundTab("image");
+      setBackgroundNotice("");
     } catch (error) {
-      setBackgroundMessage(error instanceof Error ? error.message : "Image upload failed.");
+      setBackgroundNotice(error instanceof Error ? error.message : "Image upload failed.", "error");
     } finally {
       setIsUploadingBackground(false);
     }
   };
 
-  const removeBackgroundImage = async (image: BackgroundImageOption) => {
-    if (image.path && supabase && user) {
-      await supabase.storage.from(backgroundStorageBucket).remove([image.path]);
+  const removeBackgroundImage = (image: BackgroundImageOption) => {
+    if (image.path) {
+      setBackgroundRemovedImagePaths((currentPaths) =>
+        currentPaths.includes(image.path as string) ? currentPaths : [...currentPaths, image.path as string],
+      );
     }
-
     setDraftBackgroundSettings((currentSettings) => {
       const uploadedImages = currentSettings.uploadedImages.filter((currentImage) => currentImage.id !== image.id);
-      const selectedImageId =
-        currentSettings.selectedImageId === image.id ? (uploadedImages[0]?.id ?? null) : currentSettings.selectedImageId;
+      const availableImages = getAvailableBackgroundImages({ ...currentSettings, uploadedImages });
+      const selectedImageId = currentSettings.selectedImageId === image.id
+        ? (availableImages[0]?.id ?? null)
+        : currentSettings.selectedImageId;
       return {
         ...currentSettings,
         uploadedImages,
@@ -1914,6 +1964,7 @@ function App() {
         mode: currentSettings.mode === "image" && !selectedImageId ? "mono" : currentSettings.mode,
       };
     });
+    setBackgroundNotice(`${image.name} removed. Confirm to save this change.`);
   };
 
   const saveBackgroundSettings = async () => {
@@ -1946,14 +1997,14 @@ function App() {
         if (error || !confirmedStoredSettings) {
           updateBackgroundSaveStatus("error");
           setIsSavingBackground(false);
-          setBackgroundMessage(error?.message ?? "Could not confirm the saved background.");
+          setBackgroundNotice(error?.message ?? "Could not confirm the saved background.", "error");
           return;
         }
 
         if (!areStoredBackgroundSettingsEqual(settingsToStore, confirmedStoredSettings)) {
           updateBackgroundSaveStatus("error");
           setIsSavingBackground(false);
-          setBackgroundMessage("Saved background did not match the selected background. Try again.");
+          setBackgroundNotice("Saved background did not match the selected background. Try again.", "error");
           return;
         }
 
@@ -1964,7 +2015,7 @@ function App() {
         updateBackgroundSaveStatus("saved");
       } catch (error) {
         updateBackgroundSaveStatus("error");
-        setBackgroundMessage(error instanceof Error ? error.message : "Background save failed.");
+        setBackgroundNotice(error instanceof Error ? error.message : "Background save failed.", "error");
         return;
       } finally {
         setIsSavingBackground(false);
@@ -1972,10 +2023,18 @@ function App() {
     }
 
     window.localStorage.setItem("typewriter-background-settings", JSON.stringify(settingsToStore));
+    try {
+      await removeStoredBackgroundImages(backgroundRemovedImagePaths);
+    } catch (error) {
+      updateBackgroundSaveStatus("error");
+      setBackgroundNotice(error instanceof Error ? error.message : "Background saved, but image removal failed.", "error");
+      return;
+    }
     setBackgroundSettings(confirmedSettings);
     setDraftBackgroundSettings(confirmedSettings);
     if (!supabase || !user) updateBackgroundSaveStatus("saved");
-    setBackgroundMessage("");
+    setBackgroundNotice("");
+    setBackgroundRemovedImagePaths([]);
     setIsBackgroundOpen(false);
     setColorPickerTarget(null);
     window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -2421,6 +2480,12 @@ function App() {
         autoFocus
       />
 
+      {!isStageReady ? (
+        <div className="program-loading" role="status" aria-live="polite">
+          Program is loading...
+        </div>
+      ) : null}
+
       <nav className="app-menu" aria-label="Typewriter menu">
         <div className="menu-cluster">
           <button
@@ -2459,6 +2524,7 @@ function App() {
                 onClick={(event) => {
                   event.currentTarget.blur();
                   setIsMuted((muted) => !muted);
+                  window.requestAnimationFrame(() => inputRef.current?.focus());
                 }}
                 aria-label={isMuted ? "Unmute sounds" : "Mute sounds"}
                 aria-pressed={isMuted}
@@ -2986,7 +3052,7 @@ function App() {
                   <input
                     ref={backgroundUploadInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/jpg"
+                    accept="image/png,image/jpeg"
                     className="hidden-file-input"
                     onChange={uploadBackgroundImage}
                   />
@@ -2995,13 +3061,13 @@ function App() {
                       className="image-upload-card"
                       type="button"
                       onClick={() => backgroundUploadInputRef.current?.click()}
-                      disabled={isUploadingBackground || draftBackgroundSettings.uploadedImages.filter((image) => image.isUserUpload).length >= 2}
+                      disabled={isUploadingBackground || draftBackgroundSettings.uploadedImages.filter((image) => image.isUserUpload).length >= maxBackgroundUploads}
                     >
                       <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M11 16V7.8l-3.2 3.2L6.4 9.6 12 4l5.6 5.6-1.4 1.4L13 7.8V16h-2Zm-6 2h14v2H5v-2Z" />
                       </svg>
                       <strong>{isUploadingBackground ? "Uploading..." : "Upload Image"}</strong>
-                      <span>.PNG, .jpg</span>
+                      <span>PNG or JPG, max {maxBackgroundImageSizeLabel}</span>
                     </button>
                     {availableDraftBackgroundImages.map((image) => (
                       <div
@@ -3022,7 +3088,7 @@ function App() {
                           <img src={image.url} alt="" />
                         </button>
                         {image.isUserUpload ? (
-                          <button className="image-remove-button" type="button" onClick={() => void removeBackgroundImage(image)} aria-label={`Remove ${image.name}`}>
+                          <button className="image-remove-button" type="button" onClick={() => removeBackgroundImage(image)} aria-label={`Remove ${image.name}`}>
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                               <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm12.6 1.4L6.4 19 5 17.6 17.6 5 19 6.4Z" />
                             </svg>
@@ -3031,14 +3097,14 @@ function App() {
                       </div>
                     ))}
                   </div>
-                  {backgroundMessage ? <p className="background-message">{backgroundMessage}</p> : null}
+                  {backgroundMessage ? <p className={`background-message is-${backgroundMessageTone}`}>{backgroundMessage}</p> : null}
                 </section>
               ) : null}
             </div>
 
-            {backgroundTab !== "image" && backgroundMessage ? <p className="background-message">{backgroundMessage}</p> : null}
+            {backgroundTab !== "image" && backgroundMessage ? <p className={`background-message is-${backgroundMessageTone}`}>{backgroundMessage}</p> : null}
             {backgroundTab === "image" && selectedBackgroundImage ? (
-              <p className="background-message">Selected: {selectedBackgroundImage.name}</p>
+              <p className="background-message is-info">Selected: {selectedBackgroundImage.name}</p>
             ) : null}
             <button
               className="export-submit background-save-button"
